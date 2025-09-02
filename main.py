@@ -114,7 +114,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_all_messages_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     
-    # Check if the message is a forwarded message and if the bot is a channel admin
+    # Check if the message is from a channel managed by a user
+    channel_doc = await user_channels_collection.find_one({'channel_id': message.chat_id})
+    if not channel_doc:
+        # If the channel is not linked, do nothing.
+        return
+        
+    # Check if the message is a forwarded message
     if message.forward_from or message.forward_from_chat:
         try:
             bot_member = await context.bot.get_chat_member(chat_id=message.chat.id, user_id=context.bot.id)
@@ -179,65 +185,6 @@ async def handle_all_messages_in_channel(update: Update, context: ContextTypes.D
             logging.error(f"An unexpected error occurred in channel {message.chat.id}: {e}")
             await log_event(context, f"**ERROR:** An unexpected error occurred in channel `{message.chat.id}`: `{e}`")
 
-async def remove_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    if not message.reply_to_message:
-        await update.message.reply_text("Please reply to a forwarded message with this command to remove its forward tag.")
-        return
-
-    original_message = message.reply_to_message
-    
-    try:
-        bot_member = await context.bot.get_chat_member(chat_id=original_message.chat.id, user_id=context.bot.id)
-        if not bot_member.can_delete_messages:
-            await update.message.reply_text("I cannot delete messages in this chat. Please grant me 'Delete messages' permission.")
-            return
-
-        text = original_message.text or original_message.caption
-        entities = original_message.entities or original_message.caption_entities
-
-        # Delete the original message with the forward tag
-        await original_message.delete()
-        await message.delete()
-
-        # Send the message again without the forward tag
-        if original_message.photo:
-            await context.bot.send_photo(
-                chat_id=original_message.chat.id,
-                photo=original_message.photo[-1].file_id,
-                caption=text,
-                caption_entities=entities
-            )
-        elif original_message.video:
-            await context.bot.send_video(
-                chat_id=original_message.chat.id,
-                video=original_message.video.file_id,
-                caption=text,
-                caption_entities=entities
-            )
-        elif original_message.document:
-            await context.bot.send_document(
-                chat_id=original_message.chat.id,
-                document=original_message.document.file_id,
-                caption=text,
-                caption_entities=entities
-            )
-        elif original_message.audio:
-            await context.bot.send_audio(
-                chat_id=original_message.chat.id,
-                audio=original_message.audio.file_id,
-                caption=text,
-                caption_entities=entities
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=original_message.chat.id,
-                text=text,
-                entities=entities
-            )
-    except Exception as e:
-        await update.message.reply_text(f"An error occurred while trying to remove the tag: {e}")
-        logging.error(f"Failed to remove tag with command: {e}")
 
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -572,7 +519,6 @@ def main() -> None:
     # --- Handlers ---
     application.add_handler(CommandHandler('start', start_command))
     application.add_handler(CommandHandler('addchannel', addchannel_command))
-    application.add_handler(CommandHandler('remove_tags', remove_tags_command))
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
