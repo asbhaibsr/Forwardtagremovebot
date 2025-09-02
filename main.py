@@ -115,9 +115,9 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
     
     if message.forward_from or message.forward_from_chat:
         try:
-            bot_member = await context.bot.get_chat_member(chat_id=message.chat_id, user_id=context.bot.id)
+            bot_member = await context.bot.get_chat_member(chat_id=message.chat.id, user_id=context.bot.id)
             if not bot_member.can_delete_messages:
-                logging.warning(f"Bot cannot delete messages in channel {message.chat_id}. Forwarded tag will not be removed.")
+                logging.warning(f"Bot cannot delete messages in channel {message.chat.id}. Forwarded tag will not be removed.")
                 return
 
             text = message.text or message.caption
@@ -127,35 +127,35 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
             
             if message.photo:
                 await context.bot.send_photo(
-                    chat_id=message.chat_id,
+                    chat_id=message.chat.id,
                     photo=message.photo[-1].file_id,
                     caption=text,
                     caption_entities=entities
                 )
             elif message.video:
                 await context.bot.send_video(
-                    chat_id=message.chat_id,
+                    chat_id=message.chat.id,
                     video=message.video.file_id,
                     caption=text,
                     caption_entities=entities
                 )
             elif message.document:
                 await context.bot.send_document(
-                    chat_id=message.chat_id,
+                    chat_id=message.chat.id,
                     document=message.document.file_id,
                     caption=text,
                     caption_entities=entities
                 )
             else:
                 await context.bot.send_message(
-                    chat_id=message.chat_id,
+                    chat_id=message.chat.id,
                     text=text,
                     entities=entities
                 )
 
         except Exception as e:
-            logging.error(f"Failed to handle forwarded message in channel {message.chat_id}: {e}")
-            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat_id}`: `{e}`")
+            logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
+            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat.id}`: `{e}`")
 
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -501,7 +501,8 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.FORWARDED | filters.CaptionEntity("MESSAGE")), handle_forwarded_messages))
+    # इस लाइन को सही किया गया है
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_forwarded_messages))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
