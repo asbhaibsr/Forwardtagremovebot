@@ -272,8 +272,6 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat = update.effective_chat
     new_member = update.chat_member.new_chat_member
     
-    # This will be triggered for both groups and channels.
-    # The ChatType filter in main() will handle which chat types are processed.
     if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
         await channels_collection.update_one(
             {'channel_id': chat.id},
@@ -464,7 +462,8 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
     
     # Bot ke naye chats me daalne par trigger hoga
-    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_updates=ChatMemberHandler.MY_CHAT_MEMBER))
+    # Corrected the keyword argument from 'chat_member_updates' to 'chat_member_types'
+    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
     
     # --- Webhook setup for Render deployment ---
     application.run_webhook(
