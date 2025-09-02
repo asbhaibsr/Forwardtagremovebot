@@ -14,19 +14,15 @@ from telegram.ext import (
 import motor.motor_asyncio
 import os
 
-# Logging setup
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Environment Variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 try:
     MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 except (ValueError, TypeError):
-    logging.error("Environment variables for IDs are not set correctly.")
+    logging.error("Environment variables for IDs are not set correctly. Check LOG_CHANNEL_ID format ('-100xxxxxxxxxx').")
     exit(1)
 
 MONGO_URI = os.environ.get('MONGO_URI')
@@ -34,7 +30,6 @@ ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
 PORT = int(os.environ.get('PORT', 5000))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 
-# MongoDB connections
 db_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = db_client.get_database('bot_database')
 users_collection = db.get_collection('users')
@@ -48,32 +43,37 @@ async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
     except Exception:
         return False
 
-# Bot command handlers
+# --- Bot Commands and Handlers ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if update.effective_chat.type != 'private':
         return
 
-    existing_user = await users_collection.find_one({'user_id': user.id})
-    if not existing_user:
-        log_message = (
-            f"**New User Started Bot!** 👤\n"
-            f"User ID: `{user.id}`\n"
-            f"Username: @{user.username}\n"
-            f"First Name: {user.first_name}"
-        )
-        try:
-            await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
-        except Exception as e:
-            logging.error(f"Failed to send log to channel: {e}")
-
+    user_doc = {
+        'user_id': user.id,
+        'username': user.username,
+        'first_name': user.first_name,
+        'joined': datetime.datetime.now()
+    }
     await users_collection.update_one(
         {'user_id': user.id},
-        {'$set': {'username': user.username, 'first_name': user.first_name}},
+        {'$set': user_doc},
         upsert=True
     )
-    logging.info(f"User started the bot: {user.id}")
 
+    log_message = (
+        f"**New/User Started Bot!** 👤\n"
+        f"User ID: `{user.id}`\n"
+        f"Username: @{user.username}\n"
+        f"Name: {user.first_name}\n"
+        f"Time: {datetime.datetime.now()}"
+    )
+    try:
+        await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
+    except Exception as e:
+        logging.error(f"Log channel send error: {e}")
+
+    logging.info(f"User started the bot: {user.id}")
     if not await is_user_in_channel(user.id, context):
         join_keyboard = [
             [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
@@ -186,7 +186,7 @@ async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='Markdown'
     )
 
-# Admin Commands
+# --- Premium System Handlers ---
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -263,9 +263,15 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     new_member = update.chat_member.new_chat_member
 
     if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
+        channel_doc = {
+            'channel_id': chat.id,
+            'title': chat.title,
+            'type': chat.type,
+            'joined': datetime.datetime.now()
+        }
         await channels_collection.update_one(
             {'channel_id': chat.id},
-            {'$set': {'title': chat.title, 'type': chat.type}},
+            {'$set': channel_doc},
             upsert=True
         )
         logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
@@ -274,12 +280,13 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             f"**Bot Added to New Channel!** 🎉\n"
             f"ID: `{chat.id}`\n"
             f"Title: {chat.title}\n"
-            f"Type: {chat.type}"
+            f"Type: {chat.type}\n"
+            f"Time: {datetime.datetime.now()}"
         )
         try:
             await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
         except Exception as e:
-            logging.error(f"Failed to send log to channel: {e}")
+            logging.error(f"Log channel send error: {e}")
 
         await context.bot.send_message(
             chat_id=chat.id,
@@ -427,30 +434,20 @@ async def premium_check_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Public Handlers
     application.add_handler(CommandHandler('start', start_command, filters.ChatType.PRIVATE))
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
     application.add_handler(CallbackQueryHandler(back_to_start_callback, pattern='^back_to_start$'))
     application.add_handler(CommandHandler('premium_check', premium_check_command))
-
-    # Admin Handlers
     application.add_handler(CommandHandler('stats', stats_command))
     application.add_handler(CommandHandler('premium_stats', premium_stats_command))
     application.add_handler(CommandHandler('broadcast', broadcast_command))
     application.add_handler(CommandHandler('channel_broadcast', channel_broadcast_command))
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
-    
-    # Channel-specific Handlers
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
-    
-    # ChatMemberHandler sahi tarike se use karo
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
-    
-    # Webhook setup for Render deployment
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
