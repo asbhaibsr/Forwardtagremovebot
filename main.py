@@ -106,63 +106,36 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     
-    premium_channel = await premium_channels_collection.find_one({'channel_id': message.chat_id})
-    if premium_channel and premium_channel['expiry_date'] > datetime.datetime.now():
-        return
-
+    # Check if the message is forwarded
     if message.forward_from or message.forward_from_chat:
         try:
+            # Check for premium channel
+            premium_channel = await premium_channels_collection.find_one({'channel_id': message.chat_id})
+            if premium_channel and premium_channel['expiry_date'] > datetime.datetime.now():
+                # If premium, do nothing
+                return
+
+            # Check if bot is admin with 'Delete messages' permission
+            bot_member = await context.bot.get_chat_member(chat_id=message.chat_id, user_id=context.bot.id)
+            if not bot_member.can_delete_messages:
+                logging.warning(f"Bot cannot delete messages in channel {message.chat_id}. Forwarded tag will not be removed.")
+                await log_event(context, f"**WARNING:** Bot lacks 'Delete messages' permission in channel `{message.chat_id}`. Forwarded tags will not be removed.")
+                return
+
+            # Delete the original message with the forwarded tag
             await message.delete()
 
-            if message.text:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=message.text,
-                    entities=message.entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
-            elif message.photo:
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=message.photo[-1].file_id,
-                    caption=message.caption,
-                    caption_entities=message.caption_entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
-            elif message.video:
-                await context.bot.send_video(
-                    chat_id=update.effective_chat.id,
-                    video=message.video.file_id,
-                    caption=message.caption,
-                    caption_entities=message.caption_entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
-            elif message.document:
-                await context.bot.send_document(
-                    chat_id=update.effective_chat.id,
-                    document=message.document.file_id,
-                    caption=message.caption,
-                    caption_entities=message.caption_entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
-            elif message.audio:
-                await context.bot.send_audio(
-                    chat_id=update.effective_chat.id,
-                    audio=message.audio.file_id,
-                    caption=message.caption,
-                    caption_entities=message.caption_entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
-            elif message.voice:
-                await context.bot.send_voice(
-                    chat_id=update.effective_chat.id,
-                    voice=message.voice.file_id,
-                    caption=message.caption,
-                    caption_entities=message.caption_entities,
-                    reply_to_message_id=message.reply_to_message.message_id if message.reply_to_message else None,
-                )
+            # Copy the message to the same chat, which removes the forwarded tag
+            await context.bot.copy_message(
+                chat_id=message.chat_id,
+                from_chat_id=message.chat_id,
+                message_id=message.message_id
+            )
+
         except Exception as e:
             logging.error(f"Failed to handle forwarded message in channel {message.chat_id}: {e}")
+            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat_id}`: `{e}`")
+
 
 async def log_new_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for member in update.effective_message.new_chat_members:
@@ -502,3 +475,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
