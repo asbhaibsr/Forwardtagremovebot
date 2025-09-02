@@ -76,23 +76,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     logging.info(f"User started the bot: {user.id}")
 
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
-        [InlineKeyboardButton("❓ Help", callback_data='help')],
-        [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
-    ]
-
     if not await is_user_in_channel(user.id, context):
-        keyboard[0][0] = InlineKeyboardButton("Join Our Channel", url=f"https://t.me/{MAIN_CHANNEL_ID}")
-        keyboard.insert(1, [InlineKeyboardButton("✅ Verify", callback_data='verify_join')])
+        join_keyboard = [
+            [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
+            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
+            [InlineKeyboardButton("❓ Help", callback_data='help')]
+        ]
         await update.message.reply_text(
             'Please join our channel to use this bot.',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(join_keyboard)
         )
     else:
+        main_keyboard = [
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
+            [InlineKeyboardButton("❓ Help", callback_data='help')],
+            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+        ]
         await update.message.reply_text(
             f'Hi {user.first_name}! Welcome back.',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(main_keyboard)
         )
 
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -104,13 +106,27 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text('✅ You have joined the channel. You can now use the bot.')
     else:
         keyboard = [
-            [InlineKeyboardButton("Join Channel", url=f"https://t.me/{MAIN_CHANNEL_ID}")],
+            [InlineKeyboardButton("Join Channel", url="https://t.me/Asbhai_bsr")],
             [InlineKeyboardButton("✅ Verify", callback_data='verify_join')]
         ]
         await query.edit_message_text(
             'You haven\'t joined the channel yet. Please join and try again.',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    help_text = (
+        "**❓ Help & Support**\n\n"
+        "**Forwarding:**\n"
+        "Simply add me to your channel as an administrator. I will automatically remove the 'Forwarded from' tag from all forwarded messages.\n\n"
+        "**Premium:**\n"
+        "To get premium features and remove ads, click the '👑 Buy Premium' button and follow the instructions.\n\n"
+        "For any further assistance, please contact the admin."
+    )
+    await query.edit_message_text(text=help_text, parse_mode='Markdown')
 
 # --- Premium System Handlers ---
 async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -382,6 +398,7 @@ def main() -> None:
     application.add_handler(CommandHandler('start', start_command, filters.ChatType.PRIVATE))
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
+    application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
     application.add_handler(CommandHandler('premium_check', premium_check_command))
 
     # Admin Handlers
@@ -393,8 +410,8 @@ def main() -> None:
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     # General Handlers for channels and groups
-    # THIS LINE WAS THE PROBLEM, AND IT'S NOW CORRECTED.
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
+    # Corrected line to handle all channel messages
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_new_posts))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
     # --- Webhook setup for Render deployment ---
