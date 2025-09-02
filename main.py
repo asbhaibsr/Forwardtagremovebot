@@ -8,8 +8,8 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     filters,
-    MyChatMemberHandler # This handler requires a recent version
 )
 import motor.motor_asyncio
 import os
@@ -27,7 +27,7 @@ try:
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 except (ValueError, TypeError):
     logging.error("Environment variables for IDs are not set correctly. Please check Render dashboard.")
-    exit(1) # Exit the application if critical variables are missing or invalid
+    exit(1)
 
 MONGO_URI = os.environ.get('MONGO_URI')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
@@ -258,34 +258,41 @@ async def handle_new_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif message.voice:
         await context.bot.send_voice(channel_id, voice=message.voice.file_id, caption=message.caption, caption_entities=message.caption_entities)
     
-    await message.delete()
+    try:
+        await message.delete()
+    except Exception as e:
+        logging.error(f"Failed to delete message in channel {channel_id}: {e}")
 
-# Renaming the handler to avoid the import error
-async def handle_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    if context.bot.id in [member.id for member in update.message.new_chat_members]:
-        if chat.type in ['channel', 'supergroup']:
-            await channels_collection.update_one(
-                {'channel_id': chat.id},
-                {'$set': {'title': chat.title, 'type': chat.type}},
-                upsert=True
-            )
-            logging.info(f"Bot added to new channel: {chat.title} ({chat.id})")
-            
-            log_message = (
-                f"**Bot Added to New Channel!** 🎉\n"
-                f"Channel ID: `{chat.id}`\n"
-                f"Title: {chat.title}"
-            )
-            try:
-                await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
-            except Exception as e:
-                logging.error(f"Failed to send log to channel: {e}")
+    new_member = update.chat_member.new_chat_member
 
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text='Please buy premium to stop ads from appearing on your channel.',
-            )
+    # Check if the bot itself was the one who was added to the chat
+    if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
+        # This means the bot has been added to a new chat
+        # Since we're focused on channels, the ChatType filter will handle it
+        await channels_collection.update_one(
+            {'channel_id': chat.id},
+            {'$set': {'title': chat.title, 'type': chat.type}},
+            upsert=True
+        )
+        logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
+
+        log_message = (
+            f"**Bot Added to New Channel!** 🎉\n"
+            f"ID: `{chat.id}`\n"
+            f"Title: {chat.title}\n"
+            f"Type: {chat.type}"
+        )
+        try:
+            await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
+        except Exception as e:
+            logging.error(f"Failed to send log to channel: {e}")
+
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text='Please buy premium to stop ads from appearing on your channel.',
+        )
 
 # --- Admin Commands ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -449,12 +456,12 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    # General Handlers for channels and groups
+    # Channel-specific Handlers
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
     
-    # This is the correct way to handle when the bot is added to a chat
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members))
-
+    # Bot ke naye chats me daalne par trigger hoga (groups aur channels dono ke liye kaam karega)
+    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_updates=ChatMemberHandler.MY_CHAT_MEMBER))
+    
     # --- Webhook setup for Render deployment ---
     application.run_webhook(
         listen="0.0.0.0",
