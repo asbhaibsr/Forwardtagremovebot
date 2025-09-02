@@ -22,7 +22,9 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 # --- Environment Variables (REQUIRED) ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 try:
-    MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
+    # Use a dummy ID for MAIN_CHANNEL_ID if it's not strictly required for every function
+    # or ensure it's set correctly in your environment
+    MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1001234567890'))
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 except (ValueError, TypeError):
@@ -102,7 +104,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
             [InlineKeyboardButton("❓ Help", callback_data='help')],
             [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
         ]
@@ -126,65 +128,23 @@ async def handle_all_messages_in_channel(update: Update, context: ContextTypes.D
             bot_member = await context.bot.get_chat_member(chat_id=message.chat.id, user_id=context.bot.id)
             if not bot_member.can_delete_messages:
                 logging.warning(f"Bot cannot delete messages in channel {message.chat.id}. Forwarded tag will not be removed.")
+                await log_event(context, f"**WARNING:** The bot does not have 'Delete messages' permission in channel `{message.chat.title}` (`{message.chat.id}`). Forwarded tags cannot be removed.")
                 return
 
-            text = message.text or message.caption
-            
+            # Copy the message to remove the forward tag
+            await message.copy(chat_id=message.chat.id)
+
             # Delete the original message with the forward tag
             await message.delete()
 
-            # Re-send the message without the forward tag
-            if message.photo:
-                await context.bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=message.photo.file_id,
-                    caption=text,
-                    caption_entities=message.caption_entities
-                )
-            elif message.video:
-                await context.bot.send_video(
-                    chat_id=message.chat.id,
-                    video=message.video.file_id,
-                    caption=text,
-                    caption_entities=message.caption_entities
-                )
-            elif message.document:
-                await context.bot.send_document(
-                    chat_id=message.chat.id,
-                    document=message.document.file_id,
-                    caption=text,
-                    caption_entities=message.caption_entities
-                )
-            elif message.audio:
-                await context.bot.send_audio(
-                    chat_id=message.chat.id,
-                    audio=message.audio.file_id,
-                    caption=text,
-                    caption_entities=message.caption_entities
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=message.chat.id,
-                    text=text,
-                    entities=message.entities
-                )
+            logging.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
 
         except Forbidden as e:
             logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** The bot does not have permissions to delete messages or is blocked in channel `{message.chat.id}`: `{e}`")
-        except BadRequest as e:
-            logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** An error occurred with the message content in channel `{message.chat.id}`: `{e}`")
-        except TimedOut as e:
-            logging.warning(f"Timeout occurred while processing message in channel {message.chat.id}: {e}. Retrying after a short delay.")
-            await asyncio.sleep(5)  # Wait for 5 seconds before retrying
-        except NetworkError as e:
-            logging.error(f"Network error while processing message in channel {message.chat.id}: {e}. Retrying after a short delay.")
-            await asyncio.sleep(10) # Wait for 10 seconds before retrying
+            await log_event(context, f"**ERROR:** The bot is blocked or does not have permissions to delete messages in channel `{message.chat.title}` (`{message.chat.id}`). Error: `{e}`")
         except Exception as e:
             logging.error(f"An unexpected error occurred in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** An unexpected error occurred in channel `{message.chat.id}`: `{e}`")
-
+            await log_event(context, f"**ERROR:** An unexpected error occurred in channel `{message.chat.title}` (`{message.chat.id}`): `{e}`")
 
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -216,11 +176,15 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
             await context.bot.send_message(
                 chat_id=chat.id,
-                text="Thank you for adding me! Please use the `/addchannel` command in a private chat with me to connect this channel to your account. Make sure I have 'Delete messages' rights to remove forwarded tags."
+                text="Hello! Thank you for adding me. Please make me an administrator with 'Delete messages' permission so I can remove forwarded tags from your posts."
             )
 
 async def addchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Please use this command in a private chat with me.")
+        return
+
     try:
         channel_id = None
         if context.args and len(context.args) > 0:
@@ -229,7 +193,7 @@ async def addchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             channel_id = update.message.reply_to_message.chat.id
         
         if not channel_id:
-            await update.message.reply_text("Please provide a channel ID or reply to a message from the channel. Usage: `/addchannel <channel_id>`")
+            await update.message.reply_text("Please provide a channel ID. Usage: `/addchannel -100xxxxxxxxxx` or reply to a message from the channel.")
             return
 
         try:
@@ -286,10 +250,11 @@ async def addchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added. This is your one free channel. To add more channels, buy premium.")
             
-        await context.bot.send_message(chat_id=channel_id, text=f"This channel has been successfully connected by its admin. I will now remove forwarded tags from messages. To remove a tag manually, please reply to a message with the `/remove_tags` command.")
+        await context.bot.send_message(chat_id=channel_id, text=f"This channel has been successfully connected by its admin. I will now remove forwarded tags from messages.")
 
     except (IndexError, ValueError):
         await update.message.reply_text("Invalid channel ID. Please provide a valid numerical ID or reply to a message from the channel. Usage: `/addchannel <channel_id>`")
+
 
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -297,7 +262,7 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     if await is_user_in_channel(user_id, context):
         main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
             [InlineKeyboardButton("❓ Help", callback_data='help')],
             [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
         ]
@@ -321,7 +286,7 @@ async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_T
     user = query.from_user
     if await is_user_in_channel(user.id, context):
         main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
             [InlineKeyboardButton("❓ Help", callback_data='help')],
             [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
         ]
@@ -345,13 +310,13 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     help_text = (
         "**❓ Help & Support**\n\n"
         "**Forwarding:**\n"
-        "Simply add me to your channel as an administrator. Then, use the `/addchannel` command in our private chat with me, providing the channel ID or by replying to a message from the channel. I will automatically remove the 'Forwarded from' tag from all forwarded messages. This is a free feature, but can only be used on **one channel per user**.\n\n"
+        "Simply add me to your channel as an administrator. Then, use the `/addchannel` command in our private chat with me, providing the channel ID. I will automatically remove the 'Forwarded from' tag from all forwarded messages. This is a free feature, but can only be used on **one channel per user**.\n\n"
         "**Premium:**\n"
         "To get premium features and add me to unlimited channels, click the '👑 Buy Premium' button and follow the instructions. For any further assistance, you can contact the admin.\n\n"
         "**How to add me to your channel:**\n"
         "1. Click the 'Add Me to Your Channel' button.\n"
         "2. Select the channel where you want to add the bot.\n"
-        "3. Make sure to give the bot admin permissions to 'Delete messages' and 'Post messages' so it can remove forwarded tags correctly.\n"
+        "3. Make sure to give the bot admin permissions to 'Delete messages' so it can remove forwarded tags correctly.\n"
     )
     keyboard = [
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
@@ -530,7 +495,8 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_all_messages_in_channel))
+    # Updated message handler to filter for channel messages and then check for forwards within the handler function.
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_all_messages_in_channel))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
