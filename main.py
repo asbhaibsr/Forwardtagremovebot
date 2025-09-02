@@ -569,7 +569,7 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.DOCUMENT), handle_all_messages_in_channel))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO), handle_all_messages_in_channel))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
