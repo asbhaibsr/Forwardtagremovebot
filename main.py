@@ -80,7 +80,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         join_keyboard = [
             [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
             [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
-            [InlineKeyboardButton("❓ Help", callback_data='help')]
         ]
         await update.message.reply_text(
             'Please join our channel to use this bot.',
@@ -88,7 +87,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     else:
         main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
             [InlineKeyboardButton("❓ Help", callback_data='help')],
             [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
         ]
@@ -107,11 +106,38 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         keyboard = [
             [InlineKeyboardButton("Join Channel", url="https://t.me/Asbhai_bsr")],
-            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')]
+            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
         ]
         await query.edit_message_text(
             'You haven\'t joined the channel yet. Please join and try again.',
             reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    
+    if await is_user_in_channel(user.id, context):
+        main_keyboard = [
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
+            [InlineKeyboardButton("❓ Help", callback_data='help')],
+            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+        ]
+        await query.edit_message_text(
+            f'Hi {user.first_name}! Welcome back.',
+            reply_markup=InlineKeyboardMarkup(main_keyboard)
+        )
+    else:
+        join_keyboard = [
+            [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
+            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
+        ]
+        await query.edit_message_text(
+            'Please join our channel to use this bot.',
+            reply_markup=InlineKeyboardMarkup(join_keyboard)
         )
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,12 +147,20 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     help_text = (
         "**❓ Help & Support**\n\n"
         "**Forwarding:**\n"
-        "Simply add me to your channel as an administrator. I will automatically remove the 'Forwarded from' tag from all forwarded messages.\n\n"
+        "Simply add me to your channel as an administrator. I will automatically remove the 'Forwarded from' tag from all forwarded messages. This is a free feature.\n\n"
         "**Premium:**\n"
-        "To get premium features and remove ads, click the '👑 Buy Premium' button and follow the instructions.\n\n"
-        "For any further assistance, please contact the admin."
+        "To get premium features and stop all bot ads from appearing in your channel, click the '👑 Buy Premium' button and follow the instructions. For any further assistance, you can contact the admin.\n\n"
+        "**How to add me to your channel:**\n"
+        "1. Click the 'Add Me to Your Channel' button.\n"
+        "2. Select the channel where you want to add the bot.\n"
+        "3. Make sure to give the bot admin permissions to 'Delete messages' and 'Post messages' so it can remove forwarded tags correctly.\n"
     )
-    await query.edit_message_text(text=help_text, parse_mode='Markdown')
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
+    ]
+    
+    await query.edit_message_text(text=help_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 # --- Premium System Handlers ---
 async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -144,7 +178,10 @@ async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         "3.  Click the button below to send the screenshot to our admin."
     )
     
-    keyboard = [[InlineKeyboardButton("💳 Send Screenshot", url=f"https://t.me/{ADMIN_USERNAME}")]]
+    keyboard = [
+        [InlineKeyboardButton("💳 Send Screenshot", url=f"https://t.me/{ADMIN_USERNAME}")],
+        [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
+    ]
     
     await query.edit_message_text(
         text=premium_text,
@@ -206,22 +243,21 @@ async def handle_new_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     channel_id = update.effective_chat.id
     message = update.channel_post
     
-    # Forward tag removal is now a universal feature for all channels
-    if message.forward_from or message.forward_from_chat:
-        if message.text:
-            await context.bot.send_message(channel_id, text=message.text, entities=message.entities)
-        elif message.photo:
-            await context.bot.send_photo(channel_id, photo=message.photo[-1].file_id, caption=message.caption, caption_entities=message.caption_entities)
-        elif message.video:
-            await context.bot.send_video(channel_id, video=message.video.file_id, caption=message.caption, caption_entities=message.caption_entities)
-        elif message.document:
-            await context.bot.send_document(channel_id, document=message.document.file_id, caption=message.caption, caption_entities=message.caption_entities)
-        elif message.audio:
-            await context.bot.send_audio(channel_id, audio=message.audio.file_id, caption=message.caption, caption_entities=message.caption_entities)
-        elif message.voice:
-            await context.bot.send_voice(channel_id, voice=message.voice.file_id, caption=message.caption, caption_entities=message.caption_entities)
-        
-        await message.delete()
+    # Forward tag removal
+    if message.text:
+        await context.bot.send_message(channel_id, text=message.text, entities=message.entities)
+    elif message.photo:
+        await context.bot.send_photo(channel_id, photo=message.photo[-1].file_id, caption=message.caption, caption_entities=message.caption_entities)
+    elif message.video:
+        await context.bot.send_video(channel_id, video=message.video.file_id, caption=message.caption, caption_entities=message.caption_entities)
+    elif message.document:
+        await context.bot.send_document(channel_id, document=message.document.file_id, caption=message.caption, caption_entities=message.caption_entities)
+    elif message.audio:
+        await context.bot.send_audio(channel_id, audio=message.audio.file_id, caption=message.caption, caption_entities=message.caption_entities)
+    elif message.voice:
+        await context.bot.send_voice(channel_id, voice=message.voice.file_id, caption=message.caption, caption_entities=message.caption_entities)
+    
+    await message.delete()
 
 async def on_bot_added_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -399,6 +435,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
+    application.add_handler(CallbackQueryHandler(back_to_start_callback, pattern='^back_to_start$'))
     application.add_handler(CommandHandler('premium_check', premium_check_command))
 
     # Admin Handlers
@@ -410,8 +447,7 @@ def main() -> None:
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     # General Handlers for channels and groups
-    # Corrected line to handle all channel messages
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_new_posts))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
     # --- Webhook setup for Render deployment ---
