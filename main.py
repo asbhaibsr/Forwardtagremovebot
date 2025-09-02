@@ -22,8 +22,6 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 # --- Environment Variables (REQUIRED) ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 try:
-    # Use a dummy ID for MAIN_CHANNEL_ID if it's not strictly required for every function
-    # or ensure it's set correctly in your environment
     MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1001234567890'))
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
@@ -119,7 +117,6 @@ async def handle_all_messages_in_channel(update: Update, context: ContextTypes.D
     # Check if the message is from a channel managed by a user
     channel_doc = await user_channels_collection.find_one({'channel_id': message.chat_id})
     if not channel_doc:
-        # If the channel is not linked, do nothing.
         return
         
     # Check if the message is a forwarded message
