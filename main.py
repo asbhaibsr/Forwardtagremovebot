@@ -110,7 +110,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             reply_markup=InlineKeyboardMarkup(main_keyboard)
         )
 
-async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_all_messages_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     
     if message.forward_from or message.forward_from_chat:
@@ -146,6 +146,13 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
                     caption=text,
                     caption_entities=entities
                 )
+            elif message.audio:
+                await context.bot.send_audio(
+                    chat_id=message.chat.id,
+                    audio=message.audio.file_id,
+                    caption=text,
+                    caption_entities=entities
+                )
             else:
                 await context.bot.send_message(
                     chat_id=message.chat.id,
@@ -156,6 +163,66 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
         except Exception as e:
             logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
             await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat.id}`: `{e}`")
+
+async def remove_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message.reply_to_message:
+        await update.message.reply_text("Please reply to a forwarded message with this command to remove its forward tag.")
+        return
+
+    original_message = message.reply_to_message
+    
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id=original_message.chat.id, user_id=context.bot.id)
+        if not bot_member.can_delete_messages:
+            await update.message.reply_text("I cannot delete messages in this chat. Please grant me 'Delete messages' permission.")
+            return
+
+        text = original_message.text or original_message.caption
+        entities = original_message.entities or original_message.caption_entities
+
+        # Delete the original message with the forward tag
+        await original_message.delete()
+        await message.delete()
+
+        # Send the message again without the forward tag
+        if original_message.photo:
+            await context.bot.send_photo(
+                chat_id=original_message.chat.id,
+                photo=original_message.photo[-1].file_id,
+                caption=text,
+                caption_entities=entities
+            )
+        elif original_message.video:
+            await context.bot.send_video(
+                chat_id=original_message.chat.id,
+                video=original_message.video.file_id,
+                caption=text,
+                caption_entities=entities
+            )
+        elif original_message.document:
+            await context.bot.send_document(
+                chat_id=original_message.chat.id,
+                document=original_message.document.file_id,
+                caption=text,
+                caption_entities=entities
+            )
+        elif original_message.audio:
+            await context.bot.send_audio(
+                chat_id=original_message.chat.id,
+                audio=original_message.audio.file_id,
+                caption=text,
+                caption_entities=entities
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=original_message.chat.id,
+                text=text,
+                entities=entities
+            )
+    except Exception as e:
+        await update.message.reply_text(f"An error occurred while trying to remove the tag: {e}")
+        logging.error(f"Failed to remove tag with command: {e}")
 
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -257,7 +324,7 @@ async def addchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added. This is your one free channel. To add more channels, buy premium.")
             
-        await context.bot.send_message(chat_id=channel_id, text=f"This channel has been successfully connected by its admin. I will now remove forwarded tags from messages. Please ensure I have 'Delete messages' permission.")
+        await context.bot.send_message(chat_id=channel_id, text=f"This channel has been successfully connected by its admin. I will now remove forwarded tags from messages. To remove a tag manually, please reply to a message with the `/remove_tags` command.")
 
     except (IndexError, ValueError):
         await update.message.reply_text("Invalid channel ID. Please provide a valid numerical ID or reply to a message from the channel. Usage: `/addchannel <channel_id>`")
@@ -490,6 +557,7 @@ def main() -> None:
     # --- Handlers ---
     application.add_handler(CommandHandler('start', start_command))
     application.add_handler(CommandHandler('addchannel', addchannel_command))
+    application.add_handler(CommandHandler('remove_tags', remove_tags_command))
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
@@ -501,8 +569,7 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    # इस लाइन को सही किया गया है
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_forwarded_messages))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.DOCUMENT), handle_all_messages_in_channel))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
