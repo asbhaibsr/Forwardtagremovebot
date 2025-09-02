@@ -160,34 +160,38 @@ async def log_new_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     chat_member_update = update.chat_member
-    member = chat_member_update.new_chat_member
+    
+    # Check if the bot itself is the subject of the update and has been added to the chat
+    if chat_member_update.new_chat_member.user.id == context.bot.id and \
+       chat_member_update.new_chat_member.status in ['member', 'administrator', 'creator']:
+        
+        # Check if the chat is a private chat, group, or channel
+        if chat.type in ['channel', 'supergroup', 'group']:
+            channel_doc = {
+                'channel_id': chat.id,
+                'title': chat.title,
+                'type': chat.type,
+                'joined': datetime.datetime.now()
+            }
+            await channels_collection.update_one(
+                {'channel_id': chat.id},
+                {'$set': channel_doc},
+                upsert=True
+            )
+            logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
+            log_message = (
+                f"**Bot Added to New Channel!** 🎉\n"
+                f"ID: `{chat.id}`\n"
+                f"Title: {chat.title}\n"
+                f"Type: {chat.type}\n"
+                f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            await log_event(context, log_message)
 
-    if member.user.id == context.bot.id and member.status in ['member', 'administrator', 'creator']:
-        channel_doc = {
-            'channel_id': chat.id,
-            'title': chat.title,
-            'type': chat.type,
-            'joined': datetime.datetime.now()
-        }
-        await channels_collection.update_one(
-            {'channel_id': chat.id},
-            {'$set': channel_doc},
-            upsert=True
-        )
-        logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
-        log_message = (
-            f"**Bot Added to New Channel!** 🎉\n"
-            f"ID: `{chat.id}`\n"
-            f"Title: {chat.title}\n"
-            f"Type: {chat.type}\n"
-            f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        await log_event(context, log_message)
-
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text="Thank you for adding me! Please make sure I have administrator rights to 'Delete messages' to remove forwarded tags. Buy premium to stop ads from appearing on your channel."
-        )
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text="Thank you for adding me! Please make sure I have administrator rights to 'Delete messages' to remove forwarded tags. Buy premium to stop ads from appearing on your channel."
+            )
 
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -458,7 +462,6 @@ def main() -> None:
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_forwarded_messages))
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, log_new_member_join))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
@@ -475,4 +478,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
