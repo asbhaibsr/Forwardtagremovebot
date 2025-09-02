@@ -104,20 +104,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Removes the forwarded tag and resends the message."""
     message = update.effective_message
     
-    # Do not handle forwarded messages if the chat is premium
     premium_channel = await premium_channels_collection.find_one({'channel_id': message.chat_id})
     if premium_channel and premium_channel['expiry_date'] > datetime.datetime.now():
         return
 
     if message.forward_from or message.forward_from_chat:
         try:
-            # Delete the original forwarded message
             await message.delete()
 
-            # Resend the message content without the forwarded tag
             if message.text:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -169,13 +165,10 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
             logging.error(f"Failed to handle forwarded message in channel {message.chat_id}: {e}")
 
 async def log_new_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Logs when a new user joins a chat."""
     for member in update.effective_message.new_chat_members:
         if member.id == context.bot.id:
-            # Bot was added to a new chat, this is handled by ChatMemberHandler
             pass
         else:
-            # A new user joined
             user_id = member.id
             username = member.username if member.username else "N/A"
             first_name = member.first_name
@@ -192,13 +185,11 @@ async def log_new_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE
             await log_event(context, log_message)
 
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles bot being added to a new chat and logs it."""
     chat = update.effective_chat
     chat_member_update = update.chat_member
     member = chat_member_update.new_chat_member
 
     if member.user.id == context.bot.id and member.status in ['member', 'administrator', 'creator']:
-        # Bot was added to a new chat
         channel_doc = {
             'channel_id': chat.id,
             'title': chat.title,
@@ -220,13 +211,10 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         await log_event(context, log_message)
 
-        # Send welcome message to the new chat
         await context.bot.send_message(
             chat_id=chat.id,
             text="Thank you for adding me! Please make sure I have administrator rights to 'Delete messages' to remove forwarded tags. Buy premium to stop ads from appearing on your channel."
         )
-
-# --- Other Callbacks and Commands (No changes needed here as they were correct) ---
 
 async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -479,7 +467,7 @@ async def channel_broadcast_command(update: Update, context: ContextTypes.DEFAUL
                 failed_count += 1
     await update.message.reply_text(f"Channel Broadcast complete. Sent to {sent_count} non-premium channels. Failed on {failed_count} channels.")
 
-async def main() -> None:
+def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     # --- Handlers ---
@@ -496,14 +484,13 @@ async def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    # Corrected handlers for forwarded tags and logging
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_forwarded_messages))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, log_new_member_join))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
     if WEBHOOK_URL:
-        await application.run_webhook(
+        application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path=BOT_TOKEN,
@@ -511,7 +498,7 @@ async def main() -> None:
             allowed_updates=["message", "chat_member", "callback_query"]
         )
     else:
-        await application.run_polling()
+        application.run_polling()
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
