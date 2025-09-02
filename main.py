@@ -5,45 +5,42 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
     CallbackQueryHandler,
     ChatMemberHandler,
+    ContextTypes,
     filters,
 )
 import motor.motor_asyncio
 import os
 
-# Set up logging
+# Logging setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 
-# --- Environment Variables (REQUIRED) ---
+# Environment Variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 try:
     MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 except (ValueError, TypeError):
-    logging.error("Environment variables for IDs are not set correctly. Please check Render dashboard.")
+    logging.error("Environment variables for IDs are not set correctly.")
     exit(1)
 
 MONGO_URI = os.environ.get('MONGO_URI')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
-
-# --- Webhook Variables (REQUIRED FOR RENDER) ---
 PORT = int(os.environ.get('PORT', 5000))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 
-# Connect to MongoDB
+# MongoDB connections
 db_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
 db = db_client.get_database('bot_database')
 users_collection = db.get_collection('users')
 channels_collection = db.get_collection('channels')
 premium_channels_collection = db.get_collection('premium_channels')
 
-# --- Helper Functions ---
 async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
         member = await context.bot.get_chat_member(chat_id=MAIN_CHANNEL_ID, user_id=user_id)
@@ -51,7 +48,7 @@ async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
     except Exception:
         return False
 
-# --- Bot Commands and Handlers ---
+# Bot command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if update.effective_chat.type != 'private':
@@ -163,7 +160,6 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     
     await query.edit_message_text(text=help_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- Premium System Handlers ---
 async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -190,6 +186,7 @@ async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode='Markdown'
     )
 
+# Admin Commands
 async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -198,7 +195,7 @@ async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         args = context.args
-        channel_id = int(args[0])
+        channel_id = int(args)
         duration_str = args[1].lower()
         
         duration = 0
@@ -228,7 +225,7 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         args = context.args
-        channel_id = int(args[0])
+        channel_id = int(args)
         
         result = await premium_channels_collection.delete_one({'channel_id': channel_id})
         
@@ -239,12 +236,10 @@ async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_T
     except (IndexError, ValueError):
         await update.message.reply_text('Usage: `/remove_premium <channel_id>`')
 
-# --- Channel Handlers ---
 async def handle_new_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channel_id = update.effective_chat.id
     message = update.channel_post
     
-    # Forward tag removal
     if message.text:
         await context.bot.send_message(channel_id, text=message.text, entities=message.entities)
     elif message.photo:
@@ -267,10 +262,7 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat = update.effective_chat
     new_member = update.chat_member.new_chat_member
 
-    # Check if the bot itself was the one who was added to the chat
     if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
-        # This means the bot has been added to a new chat
-        # Since we're focused on channels, the ChatType filter will handle it
         await channels_collection.update_one(
             {'channel_id': chat.id},
             {'$set': {'title': chat.title, 'type': chat.type}},
@@ -294,7 +286,6 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             text='Please buy premium to stop ads from appearing on your channel.',
         )
 
-# --- Admin Commands ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text('You are not authorized to use this command.')
@@ -380,7 +371,6 @@ async def channel_broadcast_command(update: Update, context: ContextTypes.DEFAUL
         channel_id = channel_doc['channel_id']
         premium_channel = await premium_channels_collection.find_one({'channel_id': channel_id})
         
-        # Check if the channel is NOT premium or if its premium has expired
         if not premium_channel or premium_channel['expiry_date'] < datetime.datetime.now():
             try:
                 await context.bot.copy_message(
@@ -401,9 +391,8 @@ async def premium_check_command(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         user_id = update.effective_user.id
-        channel_id = int(context.args[0])
+        channel_id = int(context.args)
 
-        # Check if the user is an admin of the specified channel
         try:
             member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
             if member.status not in ['administrator', 'creator']:
@@ -413,7 +402,6 @@ async def premium_check_command(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text('Could not find the channel or verify your admin status.')
             return
 
-        # Check for premium status
         premium_channel = await premium_channels_collection.find_one({'channel_id': channel_id})
 
         if not premium_channel:
@@ -459,10 +447,10 @@ def main() -> None:
     # Channel-specific Handlers
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
     
-    # Bot ke naye chats me daalne par trigger hoga (groups aur channels dono ke liye kaam karega)
-    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_updates=ChatMemberHandler.MY_CHAT_MEMBER))
+    # ChatMemberHandler sahi tarike se use karo
+    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
     
-    # --- Webhook setup for Render deployment ---
+    # Webhook setup for Render deployment
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
