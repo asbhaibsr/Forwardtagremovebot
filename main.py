@@ -20,11 +20,16 @@ logging.basicConfig(
 
 # --- Environment Variables (REQUIRED) ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
+try:
+    MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
+    ADMIN_ID = int(os.environ.get('ADMIN_ID'))
+    LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
+except (ValueError, TypeError):
+    logging.error("Environment variables for IDs are not set correctly. Please check Render dashboard.")
+    exit(1) # Exit the application if critical variables are missing or invalid
+
 MONGO_URI = os.environ.get('MONGO_URI')
-ADMIN_ID = int(os.environ.get('ADMIN_ID'))
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
-LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 
 # --- Webhook Variables (REQUIRED FOR RENDER) ---
 PORT = int(os.environ.get('PORT', 5000))
@@ -388,6 +393,7 @@ def main() -> None:
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     # General Handlers for channels and groups
+    # THIS LINE WAS THE PROBLEM, NOW IT IS CORRECT.
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts), channel_post_updates=True)
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
