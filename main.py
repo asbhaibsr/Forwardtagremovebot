@@ -115,9 +115,7 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    
     user = query.from_user
-    
     if await is_user_in_channel(user.id, context):
         main_keyboard = [
             [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startchannel=start")],
@@ -258,11 +256,16 @@ async def handle_new_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logging.error(f"Failed to delete message in channel {channel_id}: {e}")
 
+# --- Important: Fixed track_chat_member function ---
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    new_member = update.chat_member.new_chat_member
 
-    if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
+    # python-telegram-bot v20+ correct object:
+    chat_member_update = update.chat_member
+    member = chat_member_update.new_chat_member
+
+    # Correct status check for bot being added:
+    if member.user.id == context.bot.id and member.status in ['member', 'administrator', 'creator']:
         channel_doc = {
             'channel_id': chat.id,
             'title': chat.title,
@@ -275,7 +278,6 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             upsert=True
         )
         logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
-
         log_message = (
             f"**Bot Added to New Channel!** 🎉\n"
             f"ID: `{chat.id}`\n"
@@ -287,7 +289,6 @@ async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
         except Exception as e:
             logging.error(f"Log channel send error: {e}")
-
         await context.bot.send_message(
             chat_id=chat.id,
             text='Please buy premium to stop ads from appearing on your channel.',
@@ -421,7 +422,7 @@ async def premium_check_command(update: Update, context: ContextTypes.DEFAULT_TY
                     f'✅ **Premium Subscription Active**\n\n'
                     f'Channel ID: `{channel_id}`\n'
                     f'Expiry Date: `{expiry_date.strftime("%Y-%m-%d %H:%M:%S")}`\n'
-                    f'Remaining Time: `{remaining_time.days}` days'
+                    f'Remaining Time: `{remaining_time.days}` days"
                 )
             else:
                 await update.message.reply_text(
@@ -452,7 +453,8 @@ def main() -> None:
         listen="0.0.0.0",
         port=PORT,
         url_path="",
-        webhook_url=WEBHOOK_URL
+        webhook_url=WEBHOOK_URL,
+        allowed_updates=["message", "chat_member"]
     )
 
 if __name__ == '__main__':
