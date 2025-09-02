@@ -18,12 +18,17 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 
-# Replace with your own Bot Token, Channel ID, MongoDB URI, and Admin IDs
-BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID', -100YOUR_MAIN_CHANNEL_ID))
-MONGO_URI = os.environ.get('MONGO_URI', 'YOUR_MONGODB_URI_HERE')
-ADMIN_ID = int(os.environ.get('ADMIN_ID', 5898086036))  # Your Telegram User ID
-ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'asbhaibsr') # Your Telegram username
+# --- Environment Variables (REQUIRED) ---
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID'))
+MONGO_URI = os.environ.get('MONGO_URI')
+ADMIN_ID = int(os.environ.get('ADMIN_ID'))
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
+LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
+
+# --- Webhook Variables (REQUIRED FOR RENDER) ---
+PORT = int(os.environ.get('PORT', 5000))
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
 
 # Connect to MongoDB
 db_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
@@ -45,6 +50,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     if update.effective_chat.type != 'private':
         return
+
+    existing_user = await users_collection.find_one({'user_id': user.id})
+    if not existing_user:
+        log_message = (
+            f"**New User Started Bot!** 👤\n"
+            f"User ID: `{user.id}`\n"
+            f"Username: @{user.username}\n"
+            f"First Name: {user.first_name}"
+        )
+        try:
+            await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
+        except Exception as e:
+            logging.error(f"Failed to send log to channel: {e}")
 
     await users_collection.update_one(
         {'user_id': user.id},
@@ -193,6 +211,17 @@ async def on_bot_added_to_channel(update: Update, context: ContextTypes.DEFAULT_
             upsert=True
         )
         logging.info(f"Bot added to new channel: {chat.title} ({chat.id})")
+        
+        log_message = (
+            f"**Bot Added to New Channel!** 🎉\n"
+            f"Channel ID: `{chat.id}`\n"
+            f"Title: {chat.title}"
+        )
+        try:
+            await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
+        except Exception as e:
+            logging.error(f"Failed to send log to channel: {e}")
+
         await context.bot.send_message(
             chat_id=chat.id,
             text='Please buy premium to stop ads from appearing on your channel.',
@@ -356,14 +385,19 @@ def main() -> None:
     application.add_handler(CommandHandler('broadcast', broadcast_command))
     application.add_handler(CommandHandler('channel_broadcast', channel_broadcast_command))
     application.add_handler(CommandHandler('add_premium', add_premium_command))
-    application.add_handler(CommandHandler('remove_premium', remove_premium_command)) # New command
+    application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     # General Handlers for channels and groups
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts, channel_post_updates=True))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
-
-    # Run the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # --- Webhook setup for Render deployment ---
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="",
+        webhook_url=WEBHOOK_URL
+    )
 
 if __name__ == '__main__':
     main()
