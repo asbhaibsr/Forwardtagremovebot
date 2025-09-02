@@ -8,7 +8,6 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     CallbackQueryHandler,
-    ChatMemberHandler,
     filters,
 )
 import motor.motor_asyncio
@@ -27,7 +26,7 @@ try:
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
 except (ValueError, TypeError):
     logging.error("Environment variables for IDs are not set correctly. Please check Render dashboard.")
-    exit(1)
+    exit(1) # Exit the application if critical variables are missing or invalid
 
 MONGO_URI = os.environ.get('MONGO_URI')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
@@ -258,33 +257,22 @@ async def handle_new_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif message.voice:
         await context.bot.send_voice(channel_id, voice=message.voice.file_id, caption=message.caption, caption_entities=message.caption_entities)
     
-    try:
-        await message.delete()
-    except Exception as e:
-        logging.error(f"Failed to delete message in channel {channel_id}: {e}")
+    await message.delete()
 
-async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Check if update has the chat_member attribute to avoid crash
-    if not update.chat_member:
-        logging.warning("Received a non-chat member update. Skipping.")
-        return
-
+async def on_bot_added_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    new_member = update.chat_member.new_chat_member
-    
-    if new_member.user.id == context.bot.id and new_member.status in ['member', 'administrator', 'creator']:
+    if chat.type in ['channel', 'supergroup']:
         await channels_collection.update_one(
             {'channel_id': chat.id},
             {'$set': {'title': chat.title, 'type': chat.type}},
             upsert=True
         )
-        logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
-
+        logging.info(f"Bot added to new channel: {chat.title} ({chat.id})")
+        
         log_message = (
             f"**Bot Added to New Channel!** 🎉\n"
-            f"ID: `{chat.id}`\n"
-            f"Title: {chat.title}\n"
-            f"Type: {chat.type}"
+            f"Channel ID: `{chat.id}`\n"
+            f"Title: {chat.title}"
         )
         try:
             await context.bot.send_message(LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
@@ -458,12 +446,11 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    # Channel-specific Handlers
+    # General Handlers for channels and groups
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
     
     # Bot ke naye chats me daalne par trigger hoga
-    # Corrected the keyword argument from 'chat_member_updates' to 'chat_member_types'
-    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
     # --- Webhook setup for Render deployment ---
     application.run_webhook(
@@ -475,4 +462,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
