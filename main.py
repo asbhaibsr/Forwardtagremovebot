@@ -11,6 +11,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import TimedOut, NetworkError, Conflict, BadRequest, Forbidden
 import motor.motor_asyncio
 import os
 import asyncio
@@ -113,6 +114,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_all_messages_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     
+    # Check if the message is a forwarded message and if the bot is a channel admin
     if message.forward_from or message.forward_from_chat:
         try:
             bot_member = await context.bot.get_chat_member(chat_id=message.chat.id, user_id=context.bot.id)
@@ -121,48 +123,61 @@ async def handle_all_messages_in_channel(update: Update, context: ContextTypes.D
                 return
 
             text = message.text or message.caption
-            entities = message.entities or message.caption_entities
             
+            # Delete the original message with the forward tag
             await message.delete()
-            
+
+            # Re-send the message without the forward tag
             if message.photo:
                 await context.bot.send_photo(
                     chat_id=message.chat.id,
-                    photo=message.photo[-1].file_id,
+                    photo=message.photo.file_id,
                     caption=text,
-                    caption_entities=entities
+                    caption_entities=message.caption_entities
                 )
             elif message.video:
                 await context.bot.send_video(
                     chat_id=message.chat.id,
                     video=message.video.file_id,
                     caption=text,
-                    caption_entities=entities
+                    caption_entities=message.caption_entities
                 )
             elif message.document:
                 await context.bot.send_document(
                     chat_id=message.chat.id,
                     document=message.document.file_id,
                     caption=text,
-                    caption_entities=entities
+                    caption_entities=message.caption_entities
                 )
             elif message.audio:
                 await context.bot.send_audio(
                     chat_id=message.chat.id,
                     audio=message.audio.file_id,
                     caption=text,
-                    caption_entities=entities
+                    caption_entities=message.caption_entities
                 )
             else:
                 await context.bot.send_message(
                     chat_id=message.chat.id,
                     text=text,
-                    entities=entities
+                    entities=message.entities
                 )
 
-        except Exception as e:
+        except Forbidden as e:
             logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat.id}`: `{e}`")
+            await log_event(context, f"**ERROR:** The bot does not have permissions to delete messages or is blocked in channel `{message.chat.id}`: `{e}`")
+        except BadRequest as e:
+            logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
+            await log_event(context, f"**ERROR:** An error occurred with the message content in channel `{message.chat.id}`: `{e}`")
+        except TimedOut as e:
+            logging.warning(f"Timeout occurred while processing message in channel {message.chat.id}: {e}. Retrying after a short delay.")
+            await asyncio.sleep(5)  # Wait for 5 seconds before retrying
+        except NetworkError as e:
+            logging.error(f"Network error while processing message in channel {message.chat.id}: {e}. Retrying after a short delay.")
+            await asyncio.sleep(10) # Wait for 10 seconds before retrying
+        except Exception as e:
+            logging.error(f"An unexpected error occurred in channel {message.chat.id}: {e}")
+            await log_event(context, f"**ERROR:** An unexpected error occurred in channel `{message.chat.id}`: `{e}`")
 
 async def remove_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
@@ -569,7 +584,7 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO), handle_all_messages_in_channel))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_all_messages_in_channel))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
