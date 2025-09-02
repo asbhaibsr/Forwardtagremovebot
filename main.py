@@ -448,6 +448,8 @@ def main() -> None:
     
     # General Handlers for channels and groups
     application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts))
+    
+    # Bot ke naye chats me daalne par trigger hoga
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
     # --- Webhook setup for Render deployment ---
