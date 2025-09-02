@@ -422,7 +422,7 @@ async def premium_check_command(update: Update, context: ContextTypes.DEFAULT_TY
                     f'✅ **Premium Subscription Active**\n\n'
                     f'Channel ID: `{channel_id}`\n'
                     f'Expiry Date: `{expiry_date.strftime("%Y-%m-%d %H:%M:%S")}`\n'
-                    f'Remaining Time: `{remaining_time.days}` days"
+                    f'Remaining Time: `{remaining_time.days}` days'
                 )
             else:
                 await update.message.reply_text(
