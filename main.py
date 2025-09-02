@@ -388,7 +388,7 @@ def main() -> None:
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
     # General Handlers for channels and groups
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts, channel_post_updates=True))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_new_posts), channel_post_updates=True)
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_bot_added_to_channel))
     
     # --- Webhook setup for Render deployment ---
