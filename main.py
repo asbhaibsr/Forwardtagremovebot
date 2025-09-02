@@ -60,28 +60,29 @@ async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if update.effective_chat.type != 'private':
-        return
-    user_doc = {
-        'user_id': user.id,
-        'username': user.username,
-        'first_name': user.first_name,
-        'joined': datetime.datetime.now()
-    }
-    await users_collection.update_one(
-        {'user_id': user.id},
-        {'$set': user_doc},
-        upsert=True
-    )
-    log_message = (
-        f"**New User Started Bot!** 👤\n"
-        f"User ID: `{user.id}`\n"
-        f"Username: @{user.username}\n"
-        f"Name: {user.first_name}\n"
-        f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    await log_event(context, log_message)
-    logging.info(f"User started the bot: {user.id}")
+    
+    # Agar private chat nahi hai to bhi handle karo
+    if update.effective_chat.type == 'private':
+        user_doc = {
+            'user_id': user.id,
+            'username': user.username,
+            'first_name': user.first_name,
+            'joined': datetime.datetime.now()
+        }
+        await users_collection.update_one(
+            {'user_id': user.id},
+            {'$set': user_doc},
+            upsert=True
+        )
+        log_message = (
+            f"**New User Started Bot!** 👤\n"
+            f"User ID: `{user.id}`\n"
+            f"Username: @{user.username}\n"
+            f"Name: {user.first_name}\n"
+            f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        await log_event(context, log_message)
+        logging.info(f"User started the bot: {user.id}")
 
     if not await is_user_in_channel(user.id, context):
         join_keyboard = [
@@ -122,20 +123,45 @@ async def handle_forwarded_messages(update: Update, context: ContextTypes.DEFAUL
                 await log_event(context, f"**WARNING:** Bot lacks 'Delete messages' permission in channel `{message.chat_id}`. Forwarded tags will not be removed.")
                 return
 
+            # Get the original message content
+            text = message.text or message.caption
+            entities = message.entities or message.caption_entities
+            
             # Delete the original message with the forwarded tag
             await message.delete()
-
-            # Copy the message to the same chat, which removes the forwarded tag
-            await context.bot.copy_message(
-                chat_id=message.chat_id,
-                from_chat_id=message.chat_id,
-                message_id=message.message_id
-            )
+            
+            # Send the message again without the forwarded tag
+            if message.photo:
+                await context.bot.send_photo(
+                    chat_id=message.chat_id,
+                    photo=message.photo[-1].file_id,
+                    caption=text,
+                    caption_entities=entities
+                )
+            elif message.video:
+                await context.bot.send_video(
+                    chat_id=message.chat_id,
+                    video=message.video.file_id,
+                    caption=text,
+                    caption_entities=entities
+                )
+            elif message.document:
+                await context.bot.send_document(
+                    chat_id=message.chat_id,
+                    document=message.document.file_id,
+                    caption=text,
+                    caption_entities=entities
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=message.chat_id,
+                    text=text,
+                    entities=entities
+                )
 
         except Exception as e:
             logging.error(f"Failed to handle forwarded message in channel {message.chat_id}: {e}")
-            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.chat_id}`: `{e}`")
-
+            await log_event(context, f"**ERROR:** Failed to remove forwarded tag in channel `{message.channel_id}`: `{e}`")
 
 async def log_new_member_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for member in update.effective_message.new_chat_members:
@@ -370,10 +396,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     user_count = await users_collection.count_documents({})
     channel_count = await channels_collection.count_documents({})
+    premium_count = await premium_channels_collection.count_documents({'expiry_date': {'$gt': datetime.datetime.now()}})
     stats_text = (
         f"📊 **Bot Stats**\n\n"
         f"Total Users: {user_count}\n"
-        f"Total Channels Bot is in: {channel_count}"
+        f"Total Channels Bot is in: {channel_count}\n"
+        f"Premium Channels: {premium_count}"
     )
     await update.message.reply_text(stats_text, parse_mode='Markdown')
 
@@ -390,7 +418,9 @@ async def premium_stats_command(update: Update, context: ContextTypes.DEFAULT_TY
     for channel in premium_list:
         channel_id = channel['channel_id']
         expiry_date = channel['expiry_date']
+        status = "✅ Active" if expiry_date > datetime.datetime.now() else "❌ Expired"
         stats_text += f"**Channel ID:** `{channel_id}`\n"
+        stats_text += f"**Status:** {status}\n"
         stats_text += f"**Expiry Date:** {expiry_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         stats_text += "-------------------------\n"
     await update.message.reply_text(stats_text, parse_mode='Markdown')
@@ -448,7 +478,7 @@ def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     # --- Handlers ---
-    application.add_handler(CommandHandler('start', start_command, filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler('start', start_command))
     application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
     application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
     application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
@@ -461,7 +491,7 @@ def main() -> None:
     application.add_handler(CommandHandler('add_premium', add_premium_command))
     application.add_handler(CommandHandler('remove_premium', remove_premium_command))
     
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & filters.FORWARDED, handle_forwarded_messages))
+    application.add_handler(MessageHandler(filters.ChatType.CHANNEL & (filters.FORWARDED | filters.CaptionEntity("MESSAGE")), handle_forwarded_messages))
     application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
 
     # --- Start the bot ---
