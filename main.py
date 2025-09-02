@@ -1,418 +1,269 @@
 import logging
+import os
 import datetime
 from datetime import timedelta
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ChatMemberHandler,
-    ContextTypes,
-    filters,
-)
-from telegram.error import TimedOut, NetworkError, Conflict, BadRequest, Forbidden
-import motor.motor_asyncio
-import os
 import asyncio
+from pymongo import MongoClient
+from pyrogram import Client, filters
+from pyrogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    Message,
+    ChatMemberUpdated,
+)
+from pyrogram.enums import ChatType
+from pyrogram.errors import UserIsBlocked, RPCError, FloodWait
 
 # Set up logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # --- Environment Variables (REQUIRED) ---
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
 try:
-    MAIN_CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1001234567890'))
+    API_ID = int(os.environ.get('API_ID'))
+    API_HASH = os.environ.get('API_HASH')
+    BOT_TOKEN = os.environ.get('BOT_TOKEN')
+    MONGO_URI = os.environ.get('MONGO_URI')
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
-except (ValueError, TypeError):
-    logging.error("Environment variables for IDs are not set correctly. Check LOG_CHANNEL_ID format ('-100xxxxxxxxxx').")
+    ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
+    if not all([API_ID, API_HASH, BOT_TOKEN, MONGO_URI, ADMIN_ID, LOG_CHANNEL_ID, ADMIN_USERNAME]):
+        raise ValueError("One or more required environment variables are missing.")
+except (ValueError, TypeError) as e:
+    logger.error(f"Environment variables not set correctly: {e}")
     exit(1)
 
-MONGO_URI = os.environ.get('MONGO_URI')
-ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
-PORT = int(os.environ.get('PORT', 5000))
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
-
 # Connect to MongoDB
-db_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
-db = db_client.get_database('bot_database')
-users_collection = db.get_collection('users')
-channels_collection = db.get_collection('channels')
-premium_users_collection = db.get_collection('premium_users')
-user_channels_collection = db.get_collection('user_channels')
+try:
+    db_client = MongoClient(MONGO_URI)
+    db = db_client.get_database('bot_database')
+    users_collection = db.get_collection('users')
+    channels_collection = db.get_collection('channels')
+    premium_users_collection = db.get_collection('premium_users')
+    user_channels_collection = db.get_collection('user_channels')
+    logger.info("Connected to MongoDB successfully.")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB: {e}")
+    exit(1)
+
+# Initialize Pyrogram Client
+app = Client(
+    "forward_tag_remover",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    plugins={"root": "plugins"},
+)
 
 # --- Helper Functions ---
-
-async def log_event(context: ContextTypes.DEFAULT_TYPE, log_message: str) -> None:
+async def log_event(client, log_message: str):
     """Sends a log message to the log channel."""
     try:
-        await context.bot.send_message(chat_id=LOG_CHANNEL_ID, text=log_message, parse_mode='Markdown')
+        await client.send_message(chat_id=LOG_CHANNEL_ID, text=log_message)
     except Exception as e:
-        logging.error(f"Failed to send log message to channel {LOG_CHANNEL_ID}: {e}")
-
-async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    try:
-        member = await context.bot.get_chat_member(chat_id=MAIN_CHANNEL_ID, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except Exception:
-        return False
+        logger.error(f"Failed to send log message to channel {LOG_CHANNEL_ID}: {e}")
 
 async def is_user_premium(user_id: int) -> bool:
-    premium_user = await premium_users_collection.find_one({'user_id': user_id})
+    """Checks if a user has an active premium subscription."""
+    premium_user = premium_users_collection.find_one({'user_id': user_id})
     if premium_user and premium_user['expiry_date'] > datetime.datetime.now():
         return True
     return False
 
 # --- Bot Commands and Handlers ---
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message: Message):
+    user = message.from_user
+    user_doc = {
+        'user_id': user.id,
+        'username': user.username,
+        'first_name': user.first_name,
+        'joined': datetime.datetime.now()
+    }
+    users_collection.update_one({'user_id': user.id}, {'$set': user_doc}, upsert=True)
     
-    if update.effective_chat.type == 'private':
-        user_doc = {
-            'user_id': user.id,
-            'username': user.username,
-            'first_name': user.first_name,
-            'joined': datetime.datetime.now()
-        }
-        await users_collection.update_one(
-            {'user_id': user.id},
-            {'$set': user_doc},
-            upsert=True
-        )
-        log_message = (
-            f"**New User Started Bot!** 👤\n"
-            f"User ID: `{user.id}`\n"
-            f"Username: @{user.username}\n"
-            f"Name: {user.first_name}\n"
-            f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        await log_event(context, log_message)
-        logging.info(f"User started the bot: {user.id}")
+    log_message = (
+        f"**New User Started Bot!** 👤\n"
+        f"User ID: `{user.id}`\n"
+        f"Username: @{user.username}\n"
+        f"Name: {user.first_name}\n"
+        f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    await log_event(client, log_message)
+    logger.info(f"User started the bot: {user.id}")
 
-    if not await is_user_in_channel(user.id, context):
-        join_keyboard = [
-            [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
-            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
-        ]
-        await update.message.reply_text(
-            "Please join our channel to use this bot.",
-            reply_markup=InlineKeyboardMarkup(join_keyboard)
-        )
-    else:
-        main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
-            [InlineKeyboardButton("❓ Help", callback_data='help')],
-            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
-        ]
-        await update.message.reply_text(
-            f"Hi {user.first_name}! Welcome back.",
-            reply_markup=InlineKeyboardMarkup(main_keyboard)
-        )
+    # You can add the channel verification logic here if needed, or remove it since the new bot can handle all channels.
+    main_keyboard = [
+        [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
+        [InlineKeyboardButton("❓ Help", callback_data='help')],
+        [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+    ]
+    await message.reply_text(
+        f"Hi {user.first_name}! Welcome back. This bot will remove forward tags from messages in any channel you add it to.",
+        reply_markup=InlineKeyboardMarkup(main_keyboard)
+    )
 
-async def handle_all_messages_in_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    
-    # Check if the message is from a channel managed by a user
-    channel_doc = await user_channels_collection.find_one({'channel_id': message.chat_id})
-    if not channel_doc:
+@app.on_message(filters.command("addchannel") & filters.private)
+async def addchannel_command(client, message: Message):
+    user_id = message.from_user.id
+    if len(message.command) < 2:
+        await message.reply_text("Please provide a channel ID. Usage: `/addchannel <channel_id>`")
         return
-        
-    # Check if the message is a forwarded message
-    if message.forward_from or message.forward_from_chat:
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id=message.chat.id, user_id=context.bot.id)
-            if not bot_member.can_delete_messages:
-                logging.warning(f"Bot cannot delete messages in channel {message.chat.id}. Forwarded tag will not be removed.")
-                await log_event(context, f"**WARNING:** The bot does not have 'Delete messages' permission in channel `{message.chat.title}` (`{message.chat.id}`). Forwarded tags cannot be removed.")
-                return
-
-            # Copy the message to remove the forward tag
-            await message.copy(chat_id=message.chat.id)
-
-            # Delete the original message with the forward tag
-            await message.delete()
-
-            logging.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
-
-        except Forbidden as e:
-            logging.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** The bot is blocked or does not have permissions to delete messages in channel `{message.chat.title}` (`{message.chat.id}`). Error: `{e}`")
-        except Exception as e:
-            logging.error(f"An unexpected error occurred in channel {message.chat.id}: {e}")
-            await log_event(context, f"**ERROR:** An unexpected error occurred in channel `{message.chat.title}` (`{message.chat.id}`): `{e}`")
-
-async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    chat_member_update = update.chat_member
     
-    if chat_member_update.new_chat_member.user.id == context.bot.id and \
-       chat_member_update.new_chat_member.status in ['member', 'administrator', 'creator']:
-        
-        if chat.type in ['channel', 'supergroup', 'group']:
-            channel_doc = {
-                'channel_id': chat.id,
-                'title': chat.title,
-                'type': chat.type,
-                'joined': datetime.datetime.now(),
-            }
-            await channels_collection.update_one(
-                {'channel_id': chat.id},
-                {'$set': channel_doc},
-                upsert=True
-            )
-            logging.info(f"Bot added to new chat: {chat.title} ({chat.id})")
-            log_message = (
-                f"**Bot Added to New Channel!** 🎉\n"
-                f"ID: `{chat.id}`\n"
-                f"Title: {chat.title}\n"
-                f"Time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            await log_event(context, log_message)
-
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text="Hello! Thank you for adding me. Please make me an administrator with 'Delete messages' permission so I can remove forwarded tags from your posts."
-            )
-
-async def addchannel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if update.effective_chat.type != 'private':
-        await update.message.reply_text("Please use this command in a private chat with me.")
-        return
-
     try:
-        channel_id = None
-        if context.args and len(context.args) > 0:
-            channel_id = int(context.args[0])
-        elif update.message.reply_to_message:
-            channel_id = update.message.reply_to_message.chat.id
-        
-        if not channel_id:
-            await update.message.reply_text("Please provide a channel ID. Usage: `/addchannel -100xxxxxxxxxx` or reply to a message from the channel.")
+        channel_id = int(message.command[1])
+    except (ValueError, IndexError):
+        await message.reply_text("Invalid channel ID. Please provide a valid numerical ID.")
+        return
+
+    # Check if the user is a member of the channel
+    try:
+        member = await client.get_chat_member(channel_id, user_id)
+        if member.status not in ["administrator", "creator"]:
+            await message.reply_text("You must be an admin of the channel to add it.")
+            return
+    except RPCError as e:
+        await message.reply_text(f"Could not find the channel or verify membership. Error: {e}")
+        return
+
+    is_premium = await is_user_premium(user_id)
+    if not is_premium:
+        channel_count = user_channels_collection.count_documents({'user_id': user_id})
+        if channel_count >= 2:
+            await message.reply_text("You have already added 2 free channels. To add more, please buy premium.")
             return
 
-        try:
-            bot_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=context.bot.id)
-            if not bot_member.status in ['member', 'administrator', 'creator']:
-                await update.message.reply_text("I am not a member of this channel. Please add me to the channel first.")
-                return
-            
-            user_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-            if not user_member.status in ['administrator', 'creator']:
-                await update.message.reply_text("You are not an admin of this channel. Only channel admins can add their channels.")
-                return
+    user_channel_doc = {
+        'user_id': user_id,
+        'channel_id': channel_id,
+        'added_by_user': user_id,
+        'is_premium': is_premium,
+        'added_date': datetime.datetime.now()
+    }
+    user_channels_collection.update_one(
+        {'user_id': user_id, 'channel_id': channel_id},
+        {'$set': user_channel_doc},
+        upsert=True
+    )
 
-        except Exception as e:
-            await update.message.reply_text(f"Could not find the channel or verify membership. Make sure I am in the channel and the ID is correct. Error: {e}")
-            return
-
-        is_premium = await is_user_premium(user_id)
-        if not is_premium:
-            existing_channel = await user_channels_collection.find_one({'user_id': user_id})
-            if existing_channel:
-                await update.message.reply_text("You have already added one channel. To add more, please buy premium.")
-                return
-        
-        user_channel_doc = {
-            'user_id': user_id,
-            'channel_id': channel_id,
-            'added_by_user': user_id,
-            'is_premium': is_premium
-        }
-        await user_channels_collection.update_one(
-            {'user_id': user_id},
-            {'$set': user_channel_doc},
-            upsert=True
-        )
-
-        channel_info = await context.bot.get_chat(channel_id)
-        
-        channel_doc = {
-            'channel_id': channel_id,
-            'title': channel_info.title,
-            'type': channel_info.type,
-            'joined': datetime.datetime.now(),
-            'added_by_user': user_id
-        }
-        await channels_collection.update_one(
-            {'channel_id': channel_id},
-            {'$set': channel_doc},
-            upsert=True
-        )
-        
-        if is_premium:
-            await update.message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added to your premium account. You can add unlimited channels.")
-        else:
-            await update.message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added. This is your one free channel. To add more channels, buy premium.")
-            
-        await context.bot.send_message(chat_id=channel_id, text=f"This channel has been successfully connected by its admin. I will now remove forwarded tags from messages.")
-
-    except (IndexError, ValueError):
-        await update.message.reply_text("Invalid channel ID. Please provide a valid numerical ID or reply to a message from the channel. Usage: `/addchannel <channel_id>`")
-
-
-async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user_id = query.from_user.id
-    await query.answer()
-    if await is_user_in_channel(user_id, context):
-        main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
-            [InlineKeyboardButton("❓ Help", callback_data='help')],
-            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
-        ]
-        await query.edit_message_text(
-            "✅ You have joined the channel. You can now use the bot.",
-            reply_markup=InlineKeyboardMarkup(main_keyboard)
-        )
+    channel_info = await client.get_chat(channel_id)
+    
+    channel_doc = {
+        'channel_id': channel_id,
+        'title': channel_info.title,
+        'type': channel_info.type.value,
+        'joined': datetime.datetime.now(),
+        'added_by_user': user_id
+    }
+    channels_collection.update_one(
+        {'channel_id': channel_id},
+        {'$set': channel_doc},
+        upsert=True
+    )
+    
+    if is_premium:
+        await message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added to your premium account. You can add unlimited channels.")
     else:
-        keyboard = [
-            [InlineKeyboardButton("Join Channel", url="https://t.me/Asbhai_bsr")],
-            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
-        ]
-        await query.edit_message_text(
-            "You haven't joined the channel yet. Please join and try again.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await message.reply_text(f"✅ Channel `{channel_info.title}` has been successfully added. You can add one more free channel.")
+        
+    await client.send_message(chat_id=channel_id, text="This channel has been successfully connected by its admin. I will now remove forwarded tags from messages.")
 
-async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    if await is_user_in_channel(user.id, context):
-        main_keyboard = [
-            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{context.bot.username}?startgroup=start")],
-            [InlineKeyboardButton("❓ Help", callback_data='help')],
-            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
-        ]
-        await query.edit_message_text(
-            f"Hi {user.first_name}! Welcome back.",
-            reply_markup=InlineKeyboardMarkup(main_keyboard)
-        )
+
+@app.on_message(filters.command("removechannel") & filters.private)
+async def removechannel_command(client, message: Message):
+    user_id = message.from_user.id
+    if len(message.command) < 2:
+        await message.reply_text("Please provide a channel ID. Usage: `/removechannel <channel_id>`")
+        return
+    
+    try:
+        channel_id = int(message.command[1])
+    except (ValueError, IndexError):
+        await message.reply_text("Invalid channel ID. Please provide a valid numerical ID.")
+        return
+
+    result = user_channels_collection.delete_one({'user_id': user_id, 'channel_id': channel_id})
+    if result.deleted_count > 0:
+        await message.reply_text(f"✅ Channel `{channel_id}` has been successfully removed from your account.")
     else:
-        join_keyboard = [
-            [InlineKeyboardButton("Join Our Channel", url="https://t.me/Asbhai_bsr")],
-            [InlineKeyboardButton("✅ Verify", callback_data='verify_join')],
-        ]
-        await query.edit_message_text(
-            "Please join our channel to use this bot.",
-            reply_markup=InlineKeyboardMarkup(join_keyboard)
-        )
+        await message.reply_text(f"Channel `{channel_id}` was not found in your list of added channels.")
 
-async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    help_text = (
-        "**❓ Help & Support**\n\n"
-        "**Forwarding:**\n"
-        "Simply add me to your channel as an administrator. Then, use the `/addchannel` command in our private chat with me, providing the channel ID. I will automatically remove the 'Forwarded from' tag from all forwarded messages. This is a free feature, but can only be used on **one channel per user**.\n\n"
-        "**Premium:**\n"
-        "To get premium features and add me to unlimited channels, click the '👑 Buy Premium' button and follow the instructions. For any further assistance, you can contact the admin.\n\n"
-        "**How to add me to your channel:**\n"
-        "1. Click the 'Add Me to Your Channel' button.\n"
-        "2. Select the channel where you want to add the bot.\n"
-        "3. Make sure to give the bot admin permissions to 'Delete messages' so it can remove forwarded tags correctly.\n"
-    )
-    keyboard = [
-        [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
-    ]
-    await query.edit_message_text(text=help_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def buy_premium_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    premium_text = (
-        "👑 **Buy Premium Service**\n\n"
-        "Our premium service allows you to add the bot to unlimited channels for **₹300 for 1 year**.\n\n"
-        "**How to Pay:**\n"
-        "1.  Pay the amount via UPI to this ID: `arsadsaifi8272@ibl`\n"
-        "2.  Take a screenshot of the payment.\n"
-        "3.  Click the button below to send the screenshot to our admin for verification."
-    )
-    keyboard = [
-        [InlineKeyboardButton("💳 Send Screenshot", url=f"https://t.me/{ADMIN_USERNAME}")],
-        [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
-    ]
-    await query.edit_message_text(
-        text=premium_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-
-async def add_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+@app.on_message(filters.command("add_premium") & filters.private)
+async def add_premium_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
     try:
-        args = context.args
-        premium_user_id = int(args[0])
+        args = message.command
+        premium_user_id = int(args[1])
         premium_duration = 365 # 1 year
-        
         expiry_date = datetime.datetime.now() + timedelta(days=premium_duration)
         
-        user_doc = await users_collection.find_one({'user_id': premium_user_id})
+        user_doc = users_collection.find_one({'user_id': premium_user_id})
         if not user_doc:
-            await update.message.reply_text(f"User with ID `{premium_user_id}` not found in the database.")
+            await message.reply_text(f"User with ID `{premium_user_id}` not found in the database.")
             return
 
-        await premium_users_collection.update_one(
+        premium_users_collection.update_one(
             {'user_id': premium_user_id},
             {'$set': {'expiry_date': expiry_date, 'added_by_admin': ADMIN_ID}},
             upsert=True
         )
         
-        await update.message.reply_text(f"User `{premium_user_id}` has been granted premium for 1 year.")
+        await message.reply_text(f"User `{premium_user_id}` has been granted premium for 1 year.")
         
         try:
-            await context.bot.send_message(chat_id=premium_user_id, text="🥳 Your premium subscription has been activated! You can now add the bot to unlimited channels.")
+            await client.send_message(chat_id=premium_user_id, text="🥳 Your premium subscription has been activated! You can now add the bot to unlimited channels.")
         except Exception:
-            logging.warning(f"Failed to send a message to the user {premium_user_id} about premium activation.")
+            logger.warning(f"Failed to send a message to the user {premium_user_id} about premium activation.")
 
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /add_premium <user_id>")
+        await message.reply_text("Usage: /add_premium <user_id>")
 
-async def remove_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+@app.on_message(filters.command("remove_premium") & filters.private)
+async def remove_premium_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
     try:
-        args = context.args
-        premium_user_id = int(args[0])
-        result = await premium_users_collection.delete_one({'user_id': premium_user_id})
+        args = message.command
+        premium_user_id = int(args[1])
+        result = premium_users_collection.delete_one({'user_id': premium_user_id})
         if result.deleted_count > 0:
-            await update.message.reply_text(f"Premium status for user `{premium_user_id}` has been removed successfully.")
+            await message.reply_text(f"Premium status for user `{premium_user_id}` has been removed successfully.")
         else:
-            await update.message.reply_text(f"User `{premium_user_id}` does not have an active premium subscription.")
+            await message.reply_text(f"User `{premium_user_id}` does not have an active premium subscription.")
     except (IndexError, ValueError):
-        await update.message.reply_text("Usage: /remove_premium <user_id>")
+        await message.reply_text("Usage: /remove_premium <user_id>")
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+@app.on_message(filters.command("stats") & filters.private)
+async def stats_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
-    user_count = await users_collection.count_documents({})
-    channel_count = await channels_collection.count_documents({})
-    premium_count = await premium_users_collection.count_documents({'expiry_date': {'$gt': datetime.datetime.now()}})
+    user_count = users_collection.count_documents({})
+    channel_count = channels_collection.count_documents({})
+    premium_count = premium_users_collection.count_documents({'expiry_date': {'$gt': datetime.datetime.now()}})
     stats_text = (
         f"📊 **Bot Stats**\n\n"
         f"Total Users: {user_count}\n"
         f"Total Channels Bot is in: {channel_count}\n"
         f"Premium Users: {premium_count}"
     )
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
+    await message.reply_text(stats_text, parse_mode='Markdown')
 
-async def premium_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+@app.on_message(filters.command("premium_stats") & filters.private)
+async def premium_stats_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
     premium_users = premium_users_collection.find({})
-    premium_list = await premium_users.to_list(length=None)
+    premium_list = list(premium_users)
     if not premium_list:
-        await update.message.reply_text("No premium users found.")
+        await message.reply_text("No premium users found.")
         return
     stats_text = "👑 **Premium User Stats**\n\n"
     for user in premium_list:
@@ -423,90 +274,135 @@ async def premium_stats_command(update: Update, context: ContextTypes.DEFAULT_TY
         stats_text += f"**Status:** {status}\n"
         stats_text += f"**Expiry Date:** {expiry_date.strftime('%Y-%m-%d %H:%M:%S')}\n"
         stats_text += "-------------------------\n"
-    await update.message.reply_text(stats_text, parse_mode='Markdown')
+    await message.reply_text(stats_text, parse_mode='Markdown')
 
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+@app.on_message(filters.command("broadcast") & filters.private)
+async def broadcast_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to a message you want to broadcast to users.")
+    if not message.reply_to_message:
+        await message.reply_text("Please reply to a message you want to broadcast to users.")
         return
-    message_to_broadcast = update.message.reply_to_message
+    
+    message_to_broadcast = message.reply_to_message
     users = users_collection.find({})
     sent_count = 0
     blocked_count = 0
-    for user_doc in await users.to_list(length=None):
+    for user_doc in users:
         try:
-            await context.bot.copy_message(
+            await client.copy_message(
                 chat_id=user_doc['user_id'],
                 from_chat_id=message_to_broadcast.chat.id,
-                message_id=message_to_broadcast.message_id
+                message_id=message_to_broadcast.id
             )
             sent_count += 1
+            await asyncio.sleep(0.1) # Add a small delay
+        except UserIsBlocked:
+            blocked_count += 1
         except Exception:
             blocked_count += 1
-    await update.message.reply_text(f"User Broadcast complete. Sent to {sent_count} users. Blocked by {blocked_count} users.")
+    await message.reply_text(f"User Broadcast complete. Sent to {sent_count} users. Blocked by {blocked_count} users.")
 
-async def channel_broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("You are not authorized to use this command.")
+
+@app.on_message(filters.command("channel_broadcast") & filters.private)
+async def channel_broadcast_command(client, message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply_text("You are not authorized to use this command.")
         return
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to a message you want to broadcast to channels.")
+    if not message.reply_to_message:
+        await message.reply_text("Please reply to a message you want to broadcast to channels.")
         return
-    message_to_broadcast = update.message.reply_to_message
+    
+    message_to_broadcast = message.reply_to_message
     channels = channels_collection.find({})
     sent_count = 0
     failed_count = 0
-    for channel_doc in await channels.to_list(length=None):
+    for channel_doc in channels:
         channel_id = channel_doc['channel_id']
-        premium_channel = await premium_users_collection.find_one({'user_id': channel_doc.get('added_by_user')})
-        if not premium_channel or premium_channel['expiry_date'] < datetime.datetime.now():
-            try:
-                await context.bot.copy_message(
-                    chat_id=channel_id,
-                    from_chat_id=message_to_broadcast.chat.id,
-                    message_id=message_to_broadcast.message_id
-                )
-                sent_count += 1
-            except Exception:
-                failed_count += 1
-    await update.message.reply_text(f"Channel Broadcast complete. Sent to {sent_count} non-premium channels. Failed on {failed_count} channels.")
+        try:
+            await client.copy_message(
+                chat_id=channel_id,
+                from_chat_id=message_to_broadcast.chat.id,
+                message_id=message_to_broadcast.id
+            )
+            sent_count += 1
+            await asyncio.sleep(0.1) # Add a small delay
+        except Exception:
+            failed_count += 1
+    await message.reply_text(f"Channel Broadcast complete. Sent to {sent_count} channels. Failed on {failed_count} channels.")
 
 
-def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
+@app.on_message(filters.private & filters.regex("^(help|buy_premium|back_to_start)$"))
+async def handle_callback_message(client, message: Message):
+    # This is a fallback in case a user sends the callback data as a message.
+    # The actual logic is in the inline query handler.
+    pass
 
-    # --- Handlers ---
-    application.add_handler(CommandHandler('start', start_command))
-    application.add_handler(CommandHandler('addchannel', addchannel_command))
-    application.add_handler(CallbackQueryHandler(verify_callback, pattern='^verify_join$'))
-    application.add_handler(CallbackQueryHandler(buy_premium_callback, pattern='^buy_premium$'))
-    application.add_handler(CallbackQueryHandler(help_callback, pattern='^help$'))
-    application.add_handler(CallbackQueryHandler(back_to_start_callback, pattern='^back_to_start$'))
-    application.add_handler(CommandHandler('stats', stats_command))
-    application.add_handler(CommandHandler('premium_stats', premium_stats_command))
-    application.add_handler(CommandHandler('broadcast', broadcast_command))
-    application.add_handler(CommandHandler('channel_broadcast', channel_broadcast_command))
-    application.add_handler(CommandHandler('add_premium', add_premium_command))
-    application.add_handler(CommandHandler('remove_premium', remove_premium_command))
-    
-    # Updated message handler to filter for channel messages and then check for forwards within the handler function.
-    application.add_handler(MessageHandler(filters.ChatType.CHANNEL, handle_all_messages_in_channel))
-    application.add_handler(ChatMemberHandler(track_chat_member, chat_member_types=ChatMemberHandler.MY_CHAT_MEMBER))
+@app.on_callback_query()
+async def callback_handler(client, query):
+    data = query.data
+    user_id = query.from_user.id
+    await query.answer()
 
-    # --- Start the bot ---
-    if WEBHOOK_URL:
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=BOT_TOKEN,
-            webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
-            allowed_updates=["message", "chat_member", "callback_query"]
+    if data == 'help':
+        help_text = (
+            "**❓ Help & Support**\n\n"
+            "**Forwarding:**\n"
+            "Just add me to your channel. Then, use the `/addchannel` command in our private chat with me, providing the channel ID. I will automatically remove the 'Forwarded from' tag. This is a free feature, and you can add up to **two channels** for free.\n\n"
+            "**Premium:**\n"
+            "To get premium features and add me to unlimited channels, click the '👑 Buy Premium' button and follow the instructions. For any further assistance, you can contact the admin.\n\n"
+            "**How to add me to your channel:**\n"
+            "1. Click the 'Add Me to Your Channel' button.\n"
+            "2. Select the channel where you want to add the bot.\n"
+            "3. Use the `/addchannel` command with the channel ID in our private chat.\n"
         )
-    else:
-        application.run_polling()
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]]
+        await query.edit_message_text(text=help_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-if __name__ == '__main__':
+    elif data == 'buy_premium':
+        premium_text = (
+            "👑 **Buy Premium Service**\n\n"
+            "Our premium service allows you to add the bot to unlimited channels for **₹300 for 1 year**.\n\n"
+            "**How to Pay:**\n"
+            "1. Pay the amount via UPI to this ID: `arsadsaifi8272@ibl`\n"
+            "2. Take a screenshot of the payment.\n"
+            "3. Click the button below to send the screenshot to our admin for verification."
+        )
+        keyboard = [
+            [InlineKeyboardButton("💳 Send Screenshot", url=f"https://t.me/{ADMIN_USERNAME}")],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]
+        ]
+        await query.edit_message_text(text=premium_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+    elif data == 'back_to_start':
+        user = query.from_user
+        main_keyboard = [
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
+            [InlineKeyboardButton("❓ Help", callback_data='help')],
+            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+        ]
+        await query.edit_message_text(f"Hi {user.first_name}! Welcome back.", reply_markup=InlineKeyboardMarkup(main_keyboard))
+
+# Pyrogram forward tag removal logic
+@app.on_message(filters.forwarded & filters.chat(lambda _, __, m: user_channels_collection.find_one({'channel_id': m.chat.id})))
+async def handle_forwarded_messages(client, message: Message):
+    try:
+        if message.forward_from or message.forward_from_chat:
+            # Copy the message without the forward tag
+            await message.copy(chat_id=message.chat.id)
+            # Delete the original message with the forward tag
+            await message.delete()
+            logger.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
+    except Exception as e:
+        logger.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
+        log_message = f"**ERROR:** An unexpected error occurred in channel `{message.chat.title}` (`{message.chat.id}`): `{e}`"
+        await log_event(client, log_message)
+
+def main():
+    logger.info("Starting bot...")
+    app.run()
+
+if __name__ == "__main__":
     main()
+
