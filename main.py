@@ -9,9 +9,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     Message,
-    ChatMemberUpdated,
 )
-from pyrogram.enums import ChatType
+from pyrogram.enums import ChatType, ChatMemberStatus
 from pyrogram.errors import UserIsBlocked, RPCError, FloodWait
 from flask import Flask
 from threading import Thread
@@ -68,8 +67,8 @@ def home():
     return "Bot is running OK!"
 
 def run_flask_app():
-    web_app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
-
+    port = int(os.environ.get('PORT', 5000))
+    web_app.run(host='0.0.0.0', port=port)
 
 # --- Helper Functions ---
 async def log_event(client, log_message: str):
@@ -92,20 +91,17 @@ async def start_command(client, message: Message):
     user = message.from_user
     
     # Check for force subscription
+    is_member = False
     try:
         member = await client.get_chat_member(FORCE_SUBSCRIBE_CHANNEL, user.id)
-        if member.status in ["kicked", "left"]:
-            await message.reply_text(
-                "🙏 **कृपया पहले हमारा चैनल ज्वाइन करें!**\n\n"
-                "यह बॉट उपयोग करने के लिए आपको हमारे चैनल में शामिल होना होगा।",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ चैनल ज्वाइन करें", url=f"https://t.me/{FORCE_SUBSCRIBE_CHANNEL}")],
-                    [InlineKeyboardButton("✅ मैं पहले से ही जुड़ गया हूँ", callback_data="verify_member")]
-                ])
-            )
-            return
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            is_member = True
+    except RPCError as e:
+        logger.warning(f"Could not check channel membership for user {user.id}: {e}")
     except Exception as e:
-        logger.error(f"Error checking channel membership: {e}")
+        logger.error(f"Unexpected error during membership check: {e}")
+
+    if not is_member:
         await message.reply_text(
             "🙏 **कृपया पहले हमारा चैनल ज्वाइन करें!**\n\n"
             "यह बॉट उपयोग करने के लिए आपको हमारे चैनल में शामिल होना होगा।",
@@ -116,7 +112,7 @@ async def start_command(client, message: Message):
         )
         return
         
-    # If member is found, proceed with regular start message
+    # If member is found and not left/kicked, proceed with regular start message
     user_doc = {
         'user_id': user.id,
         'username': user.username,
@@ -145,7 +141,6 @@ async def start_command(client, message: Message):
         reply_markup=InlineKeyboardMarkup(main_keyboard)
     )
 
-# The rest of your bot commands remain the same, I've just added the main changes.
 @app.on_message(filters.command("addchannel") & filters.private)
 async def addchannel_command(client, message: Message):
     user_id = message.from_user.id
@@ -159,10 +154,10 @@ async def addchannel_command(client, message: Message):
         await message.reply_text("Invalid channel ID. Please provide a valid numerical ID.")
         return
 
-    # Check if the user is a member of the channel
+    # Check if the user is a creator or admin of the channel
     try:
-        member = await client.get_chat_member(channel_id, user_id)
-        if member.status not in ["administrator", "creator"]:
+        member = await client.get_chat_member(channel_id, user.id)
+        if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             await message.reply_text("You must be an admin of the channel to add it.")
             return
     except RPCError as e:
@@ -377,20 +372,26 @@ async def channel_broadcast_command(client, message: Message):
 @app.on_callback_query(filters.regex("verify_member"))
 async def verify_member_callback(client, query):
     user_id = query.from_user.id
+    is_member = False
     try:
         member = await client.get_chat_member(FORCE_SUBSCRIBE_CHANNEL, user_id)
-        if member.status in ["member", "administrator", "creator"]:
-            main_keyboard = [
-                [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
-                [InlineKeyboardButton("❓ Help", callback_data='help')],
-                [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
-            ]
-            await query.edit_message_text(f"✅ **सत्यापन सफल!** अब आप बॉट का उपयोग कर सकते हैं।",
-                                          reply_markup=InlineKeyboardMarkup(main_keyboard))
-        else:
-            await query.answer("❌ आप अभी भी चैनल में शामिल नहीं हुए हैं। कृपया पहले ज्वाइन करें।", show_alert=True)
-    except Exception:
-        await query.answer("❌ सत्यापन में कोई त्रुटि आई। कृपया बाद में प्रयास करें।", show_alert=True)
+        if member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+            is_member = True
+    except RPCError as e:
+        logger.error(f"Error verifying member status for user {user_id}: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in verification callback: {e}")
+    
+    if is_member:
+        main_keyboard = [
+            [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
+            [InlineKeyboardButton("❓ Help", callback_data='help')],
+            [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+        ]
+        await query.edit_message_text("✅ **सत्यापन सफल!** अब आप बॉट का उपयोग कर सकते हैं।",
+                                      reply_markup=InlineKeyboardMarkup(main_keyboard))
+    else:
+        await query.answer("❌ आप अभी भी चैनल में शामिल नहीं हुए हैं। कृपया पहले ज्वाइन करें।", show_alert=True)
 
 @app.on_callback_query()
 async def callback_handler(client, query):
@@ -442,11 +443,18 @@ async def callback_handler(client, query):
 async def handle_forwarded_messages(client, message: Message):
     try:
         if message.forward_from_chat or message.forward_from:
-            # Copy the message without the forward tag
-            await message.copy(chat_id=message.chat.id)
-            # Delete the original message with the forward tag
-            await message.delete()
-            logger.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
+            # Check if bot has delete permission in the channel
+            bot_member = await client.get_chat_member(message.chat.id, client.me.id)
+            if bot_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER] and bot_member.privileges.can_delete_messages:
+                # Copy the message without the forward tag
+                await message.copy(chat_id=message.chat.id)
+                # Delete the original message with the forward tag
+                await message.delete()
+                logger.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
+            else:
+                log_message = f"**WARNING:** Bot is not an admin or lacks `can_delete_messages` permission in channel `{message.chat.title}` (`{message.chat.id}`). Forward tag cannot be removed."
+                await log_event(client, log_message)
+                logger.warning(f"Bot lacks 'can_delete_messages' permission in channel: {message.chat.title} ({message.chat.id})")
     except FloodWait as e:
         logger.warning(f"FloodWait error: Sleeping for {e.value} seconds.")
         await asyncio.sleep(e.value)
