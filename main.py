@@ -13,6 +13,8 @@ from pyrogram.types import (
 )
 from pyrogram.enums import ChatType
 from pyrogram.errors import UserIsBlocked, RPCError, FloodWait
+from flask import Flask
+from threading import Thread
 
 # Set up logging
 logging.basicConfig(
@@ -29,7 +31,9 @@ try:
     ADMIN_ID = int(os.environ.get('ADMIN_ID'))
     LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID'))
     ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME')
-    if not all([API_ID, API_HASH, BOT_TOKEN, MONGO_URI, ADMIN_ID, LOG_CHANNEL_ID, ADMIN_USERNAME]):
+    FORCE_SUBSCRIBE_CHANNEL = os.environ.get('FORCE_SUBSCRIBE_CHANNEL', 'asbhai_bsr')
+
+    if not all([API_ID, API_HASH, BOT_TOKEN, MONGO_URI, ADMIN_ID, LOG_CHANNEL_ID, ADMIN_USERNAME, FORCE_SUBSCRIBE_CHANNEL]):
         raise ValueError("One or more required environment variables are missing.")
 except (ValueError, TypeError) as e:
     logger.error(f"Environment variables not set correctly: {e}")
@@ -54,8 +58,18 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    plugins={"root": "plugins"},
 )
+
+# --- Flask App for Render ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is running OK!"
+
+def run_flask_app():
+    web_app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000))
+
 
 # --- Helper Functions ---
 async def log_event(client, log_message: str):
@@ -76,6 +90,33 @@ async def is_user_premium(user_id: int) -> bool:
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
     user = message.from_user
+    
+    # Check for force subscription
+    try:
+        member = await client.get_chat_member(FORCE_SUBSCRIBE_CHANNEL, user.id)
+        if member.status in ["kicked", "left"]:
+            await message.reply_text(
+                "🙏 **कृपया पहले हमारा चैनल ज्वाइन करें!**\n\n"
+                "यह बॉट उपयोग करने के लिए आपको हमारे चैनल में शामिल होना होगा।",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ चैनल ज्वाइन करें", url=f"https://t.me/{FORCE_SUBSCRIBE_CHANNEL}")],
+                    [InlineKeyboardButton("✅ मैं पहले से ही जुड़ गया हूँ", callback_data="verify_member")]
+                ])
+            )
+            return
+    except Exception as e:
+        logger.error(f"Error checking channel membership: {e}")
+        await message.reply_text(
+            "🙏 **कृपया पहले हमारा चैनल ज्वाइन करें!**\n\n"
+            "यह बॉट उपयोग करने के लिए आपको हमारे चैनल में शामिल होना होगा।",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ चैनल ज्वाइन करें", url=f"https://t.me/{FORCE_SUBSCRIBE_CHANNEL}")],
+                [InlineKeyboardButton("✅ मैं पहले से ही जुड़ गया हूँ", callback_data="verify_member")]
+            ])
+        )
+        return
+        
+    # If member is found, proceed with regular start message
     user_doc = {
         'user_id': user.id,
         'username': user.username,
@@ -94,7 +135,6 @@ async def start_command(client, message: Message):
     await log_event(client, log_message)
     logger.info(f"User started the bot: {user.id}")
 
-    # You can add the channel verification logic here if needed, or remove it since the new bot can handle all channels.
     main_keyboard = [
         [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
         [InlineKeyboardButton("❓ Help", callback_data='help')],
@@ -105,6 +145,7 @@ async def start_command(client, message: Message):
         reply_markup=InlineKeyboardMarkup(main_keyboard)
     )
 
+# The rest of your bot commands remain the same, I've just added the main changes.
 @app.on_message(filters.command("addchannel") & filters.private)
 async def addchannel_command(client, message: Message):
     user_id = message.from_user.id
@@ -297,7 +338,7 @@ async def broadcast_command(client, message: Message):
                 message_id=message_to_broadcast.id
             )
             sent_count += 1
-            await asyncio.sleep(0.1) # Add a small delay
+            await asyncio.sleep(0.1)
         except UserIsBlocked:
             blocked_count += 1
         except Exception:
@@ -327,24 +368,36 @@ async def channel_broadcast_command(client, message: Message):
                 message_id=message_to_broadcast.id
             )
             sent_count += 1
-            await asyncio.sleep(0.1) # Add a small delay
+            await asyncio.sleep(0.1)
         except Exception:
             failed_count += 1
     await message.reply_text(f"Channel Broadcast complete. Sent to {sent_count} channels. Failed on {failed_count} channels.")
 
-
-@app.on_message(filters.private & filters.regex("^(help|buy_premium|back_to_start)$"))
-async def handle_callback_message(client, message: Message):
-    # This is a fallback in case a user sends the callback data as a message.
-    # The actual logic is in the inline query handler.
-    pass
+# --- Callback Query Handlers ---
+@app.on_callback_query(filters.regex("verify_member"))
+async def verify_member_callback(client, query):
+    user_id = query.from_user.id
+    try:
+        member = await client.get_chat_member(FORCE_SUBSCRIBE_CHANNEL, user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            main_keyboard = [
+                [InlineKeyboardButton("➕ Add Me to Your Channel", url=f"https://t.me/{client.me.username}?startgroup=start")],
+                [InlineKeyboardButton("❓ Help", callback_data='help')],
+                [InlineKeyboardButton("👑 Buy Premium", callback_data='buy_premium')]
+            ]
+            await query.edit_message_text(f"✅ **सत्यापन सफल!** अब आप बॉट का उपयोग कर सकते हैं।",
+                                          reply_markup=InlineKeyboardMarkup(main_keyboard))
+        else:
+            await query.answer("❌ आप अभी भी चैनल में शामिल नहीं हुए हैं। कृपया पहले ज्वाइन करें।", show_alert=True)
+    except Exception:
+        await query.answer("❌ सत्यापन में कोई त्रुटि आई। कृपया बाद में प्रयास करें।", show_alert=True)
 
 @app.on_callback_query()
 async def callback_handler(client, query):
     data = query.data
     user_id = query.from_user.id
     await query.answer()
-
+    
     if data == 'help':
         help_text = (
             "**❓ Help & Support**\n\n"
@@ -359,7 +412,7 @@ async def callback_handler(client, query):
         )
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='back_to_start')]]
         await query.edit_message_text(text=help_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
+    
     elif data == 'buy_premium':
         premium_text = (
             "👑 **Buy Premium Service**\n\n"
@@ -384,25 +437,28 @@ async def callback_handler(client, query):
         ]
         await query.edit_message_text(f"Hi {user.first_name}! Welcome back.", reply_markup=InlineKeyboardMarkup(main_keyboard))
 
-# Pyrogram forward tag removal logic
-@app.on_message(filters.forwarded & filters.chat(lambda _, __, m: user_channels_collection.find_one({'channel_id': m.chat.id})))
+# --- Pyrogram forward tag removal logic ---
+@app.on_message(filters.chat(lambda _, __, m: user_channels_collection.find_one({'channel_id': m.chat.id})))
 async def handle_forwarded_messages(client, message: Message):
     try:
-        if message.forward_from or message.forward_from_chat:
+        if message.forward_from_chat or message.forward_from:
             # Copy the message without the forward tag
             await message.copy(chat_id=message.chat.id)
             # Delete the original message with the forward tag
             await message.delete()
             logger.info(f"Forwarded message removed and resent in channel: {message.chat.title} ({message.chat.id})")
+    except FloodWait as e:
+        logger.warning(f"FloodWait error: Sleeping for {e.value} seconds.")
+        await asyncio.sleep(e.value)
     except Exception as e:
         logger.error(f"Failed to handle forwarded message in channel {message.chat.id}: {e}")
         log_message = f"**ERROR:** An unexpected error occurred in channel `{message.chat.title}` (`{message.chat.id}`): `{e}`"
         await log_event(client, log_message)
 
 def main():
-    logger.info("Starting bot...")
+    logger.info("Starting bot and web server...")
+    Thread(target=run_flask_app).start()
     app.run()
 
 if __name__ == "__main__":
     main()
-
